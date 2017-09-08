@@ -1,0 +1,50 @@
+#!/bin/bash
+
+# Configuration
+
+hugetlb_path_default="/mnt/hugetlb"
+output_dir="/tmp/output"
+pcap_file="./Ncapture.pcap"
+out_iface=xgb1
+hpcap_iface=0
+
+source $(dirname "${BASH_SOURCE[0]}")/scripts/utils.sh
+
+hugetlb_path=""
+
+mounted_tlb=$(mount | grep "type hugetlbfs" | awk '{print $3}')
+
+if [ -z $mounted_tlb ]; then
+	echob "No mounted hugetlb FS found."
+	mkdir -p $hugetlb_path_default
+	mount -t hugetlbfs none $hugetlb_path_default		
+	echob "Created hugetlbfs at default path: $hugetlb_path_default"
+
+	hugetlb_path=$hugetlb_path_default
+else
+	echob "Found hugetlb at $mounted_tlb"
+	hugetlb_path=$mounted_tlb
+fi
+
+hp_info
+
+if [ "$1" != "--nomod" ]; then
+	echob "Installing driver"
+	sudo ./install_hpcap.bash || (echob "${tred}Install failed" && exit 1)
+fi
+
+mkdir -p $output_dir
+
+echob "Press enter to start running hpcapdd..."
+read
+
+sudo taskset -c 1 samples/hpcapdd/hpcapdd_p5g $hpcap_iface 0 $output_dir &
+hpcapdd_pid=$(ps | grep -v grep | grep "hpcapdd_p5g" | awk '{print $1}')
+
+echob "HPCAPDD running..."
+
+echob "Press enter to replay pcap file $pcap_file"...
+read
+
+tcpreplay -i $out_iface -o $pcap_file
+kill -INT $hpcapdd_pid

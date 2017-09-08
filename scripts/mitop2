@@ -1,0 +1,23 @@
+#!/bin/bash
+
+function mips()
+{
+	ps -p $1 -L -o pid,lwp,nlwp,tid,class,rtprio,ni,pri,pcpu,stat,wchan:14,comm,psr,size,vsize
+}
+
+mips $(pidof hpcapPoll1q0)
+echo
+
+mips $(pidof mgmon)
+echo
+
+#mips $(pidof raw2pcap)
+echo
+
+#for i in $(seq 1 6)
+#do
+#	mips $(pidof packet_count|awk -v n=$i '{print $n}')
+#	echo
+#done
+
+df -h

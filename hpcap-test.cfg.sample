@@ -1,0 +1,111 @@
+# Sample configuration file for the hpcap-test script.
+# This file contains settings that manage the testing of the
+# driver.
+# Uses bash syntax.
+
+### Basic testing facilities ###
+
+# Space-separated list of the drivers that will be tested.
+# Note: all drivers are tested for successful compilation.
+use_drivers="hpcap"
+
+# If "true", the testing script will try to remove and reinstall
+# the driver to ensure that it works perfectly. The bad part is that
+# it makes the test session last a little bit more.
+test_rmmod=true
+
+# Test the driver installlation procedure. It's obviously required to
+# install the driver in order to test it. However, if you just want
+# to do traffic tests and you are sure that HPCAP is always installed,
+# you can set this to false to make tests faster.
+test_insmod=true
+
+### Traffic capture & generation tests ###
+
+# These tests ensure that HPCAP can receive traffic at the desired rates
+# and that losses don't occur. Optionally, the test can also be configured
+# to send and receive traffic and ensure that the capture files are equal.
+
+# Test traffic reception without writing to disk.
+test_traffic_rx=false
+
+# HPCAP port that will receive the traffic
+receiver_port=3
+
+## Parameters to control the traffic generator.
+
+# SSH host specification of the machine that will generate the traffic.
+generator_ssh_host="myuser@myhost"
+
+# Application used to generate the traffic.
+# Supported values:
+# 	- moongen: https://github.com/emmericp/MoonGen
+# 	- fpga: José Fernando's FPGA traffic generator
+# 	- hpcn_latency: Rafa Leira's DPDK-based generator
+generator_mode="moongen"
+
+# Binaries for the FPGA generator
+fpga_path=""
+
+# Path of the hpcn_latency application
+hpcn_latency_path=""
+
+# MAC target for the hpcn_latency app
+hpcn_latency_dstmac="ff:ff:ff:ff:ff:ff"
+
+# Port to use when sending traffic.
+generator_port=3
+
+# Rate, in Mbps, of the traffic generator.
+generation_rate_Mbps=8500
+
+# Size, in bytes, of the frames to send through the generator.
+generation_frame_size=88
+
+generation_duration_seconds=60
+
+# Frames that we accept losing. If the number of lost frames is
+# greater than this, we will fail the test.
+loss_margin=1000
+
+# Test traffic reception and write to disk.
+test_traffic_store=false
+
+# Where to save the the traffic
+traffic_store_dir=/disco_capturas_0
+
+# Generation rate for the storage test
+generation_storage_rate_Mbps=8500
+
+# Test the reception with small, non-hugepage buffers.
+# These may help to discover issues with counters that overflow
+test_small_buffer=true
+
+# The size of the buffer for small size tests, in megabytes.
+small_buffer_size_MB=256
+
+# Generation rate for the small buffer tests
+small_buffer_genrate_Mbps=6000
+
+# Maximum loss percentage for the small buffer tests
+small_buffer_max_loss_pctg=20
+
+# Duration of the generation for the small buffer tests
+small_buffer_gen_duration_seconds=100
+
+# Test for correct paddings even with strange/forced situations
+test_bad_padding=true
+
+# Duration of the generation for the bad padding test. With only a few seconds it's enough.
+bad_padding_gen_duration_seconds=20
+
+### Benchmarking specific settings (application scripts/hpcap-benchmark) ###
+
+# Configuration data such as receiver/generator_port, generator_ssh_host, generator_mode
+# and generation_duration_seconds are read from the section above.
+
+# Frame sizes to test
+benchmark_framesizes="64 68 72 76 80 84 88 92 96 100 110 120 150 200 300 500 1500"
+
+# Throughput rates to test (in Mbps)
+benchmark_rates_Mbps="10000"

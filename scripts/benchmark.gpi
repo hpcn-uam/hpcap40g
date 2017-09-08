@@ -1,0 +1,41 @@
+#!/usr/bin/gnuplot
+# Expects:
+# -fin: Input file
+# -fout: Output file
+
+set term pngcairo size 1600,1000 dashed
+
+set title 'HPCAP Benchmark'
+
+set xlabel "Frame size (bytes)"
+set ylabel "%"
+set y2label "Mbps"
+
+set y2tics
+set ytics nomirror
+
+set xtics 0,100,1500
+set ytics
+set mxtics 5
+set mytics
+
+set key bottom right
+
+set style line 102 lc rgb '#808080' lt 3 lw 1
+set style line 103 lc rgb '#A0A0A0' lt 3 lw 0.5
+
+set grid xtics mxtics ls 102, ls 103
+set grid ytics mytics ls 102, ls 103
+
+set yrange [0:105]
+set y2range [0:40000]
+
+set output fout
+
+plot \
+	fin using 2:8 with lines title 'Capture %' lw 2 lt 1 lc rgb '#1B9E77', \
+	fin using 2:10 with lines title 'Lost %' lw 2 lt 1 lc rgb '#66A61E', \
+	fin using 2:12 with lines title 'Port Drop %' lw 2 lt 1 lc rgb '#E6AB02', \
+	fin using 2:4 with lines title 'Send rate' axes x1y2 lw 1 lt 1 lc rgb '#D95F02', \
+	fin using 2:(8 * $6 * $2 / ($3 * 1000000)) with lines axes x1y2 title 'Capture rate' lw 2 lt 1 lc rgb '#E7298A', \
+	40000*x/(x+20) with lines title 'Max rate' axes x1y2 lw 1 lt 1 lc rgb '#7570B3'

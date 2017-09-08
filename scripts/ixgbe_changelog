@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# A simple script to retrieve the accumulated changelog of the IXGBE driver from a certain version
+# onwards.
+
+versions=$(curl -s http://sourceforge.net/projects/e1000/files/ixgbe%20stable/ |
+	grep 'projects/e1000/files/ixgbe%20stable/[0-9.]\+/"' |
+	awk -v FS=/ '{print $6}' |
+	awk -v FS=. "\$1 > $1 || (\$1 == $1 && \$2 > $2) || (\$1 == $1 && \$2 == $2 && \$3 > $3) { print }")
+
+for ver in $versions; do
+	url="http://sourceforge.net/projects/e1000/files/ixgbe%20stable/$ver/"
+
+	echo "Changes for version $ver"
+	curl -s $url |
+		awk '/<div class="content format-plaintext">/{flag=1;next}/<\/div>/{flag=0}flag' |
+		grep '[-*]' |
+		sed -E 's/^[[:space:]]*/ /g' |
+		tr '*' '-'
+	echo
+done

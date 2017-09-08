@@ -1,0 +1,11 @@
+--style=linux
+--indent=force-tab
+--indent-switches
+-n
+-z2
+--indent-col1-comments
+--break-blocks
+--pad-oper
+--pad-header
+-U
+--remove-brackets

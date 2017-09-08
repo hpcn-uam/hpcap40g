@@ -1,0 +1,56 @@
+#!/bin/bash
+
+
+function segundo
+{
+	echo $2
+}
+function cuarto
+{
+	echo $4
+}
+lastD=0
+lastR=0
+lastB=0
+
+if [ $# -ne 2 ]
+then
+	echo "Uso: ./monitor <ifaz> <seg refresco>"
+fi
+
+while [ 1 ]
+do
+	n=$(ifconfig -a | grep $1 | wc -l)
+	if [ $n -eq 0 ]
+	then
+		newD=0
+		newR=0
+	else
+		linea=$(ifconfig $1 | grep "RX packets:")	
+		lineaD=$(cuarto $linea)
+		lineaR=$(segundo $linea)
+		newD=${lineaD#dropped:}
+		newR=${lineaR#packets:}
+		linea=$(ifconfig $1 | grep "RX bytes:")	
+		lineaB=$(segundo $linea)
+		newB=${lineaB#bytes:}
+	fi
+	lost=$(( $newD - $lastD ))
+	rx=$(( $newR - $lastR ))
+	mbps=$(( 8 * $(( $newB - $lastB )) / 1000000 ))
+
+	
+	ocupacion=$(df -h /disco_capturas/ | grep /dev/ | awk '{printf("%s/%s=%s", $3, $2, $5);}')
+	
+	echo $1 " [ "$(date)" ] " $(( $rx / $2 )) "" $(( $mbps / $2 ))"mbps " $(( $lost / $2 )) $ocupacion
+	if [ $# -ge 3 ]
+	then
+		echo $1 " [ "$(date)" ] " $(( $rx / $2 )) "" $(( $mbps / $2 ))"mbps " $(( $lost / $2 )) $ocupacion >> $3
+	fi
+
+	lastD=$newD
+	lastR=$newR
+	lastB=$newB
+	sleep $2
+done
+

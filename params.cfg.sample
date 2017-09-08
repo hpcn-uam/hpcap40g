@@ -1,0 +1,167 @@
+#####################################################################
+#
+# HPCAP's configuration file
+#
+#####################################################################
+
+###################
+# Use virtual function driver
+use_vf=0;
+###################
+
+###################
+# Number of RX queues
+nrxq=1;
+###################
+
+###################
+# Number of TX queues
+ntxq=1;
+###################
+
+###################
+# Number of consumers per queue
+consumers=1;
+###################
+
+###################
+# Interface list
+#  E.g.:
+#	ifs=hpcap0 xgb1 hpcap2 ...;
+ifs=hpcap0 xgb1;
+###################
+
+###################
+# Total number of interfaces in the system (ussually 2 times the number of cards)
+nif=4;
+###################
+
+###################
+# Mode
+#       1 = standard ixgbe mode (interface name = "xgb[N]")
+#       2 = high performance RX (interface name = "hpcap[N]")
+# 		3 = high performance RX with hugepage-backed buffer.
+# E.g.:
+#       mode0=1; <---- xgb0 will be set to standard ixgbe mode
+#       mode0=2; <---- hpcap0 will be set to high performance RX
+#       mode1=2; <---- hpcap1 will be set to high performance RX
+mode0=3;
+mode1=1;
+mode2=1;
+mode3=1;
+###################
+
+###################
+# Core to start mapping threads at
+#	run "numactl --hardware" to check available nodes
+#	a value of -1 means the last core
+#	a value greater or equal than zero means the specified core
+# E.g.:
+#	core0=3 <---- hpcap0 (or xgb0) queues will be mapped from core 3 and so on
+#	core2=6 <---- hpcap2 (or xgb2) queues will be mapped from core 6 and so on
+core0=6;
+core1=0;
+core2=-1;
+core3=-1;
+###################
+
+###################
+# Dup
+#       0 = do not remove duplicated packets
+#       1 = remove duplicated packets
+# E.g.:
+#       dup0=1; <---- hpcap0 will remove duplicate packets
+#       dup1=0; <---- hpcap1 will not remove duplicates packets
+dup0=0;
+dup1=0;
+dup2=0;
+dup3=0;
+###################
+
+###################
+# Link speed
+#	1000 = 1 Gbps
+#	10000 = 10 Gbps
+# E.g.:
+#       vel0=1000;  <---- hpcap0 will be negotiated at 1Gbps
+#       vel3=10000; <---- hpcap3 will be negotiated at 10Gbps
+vel0=10000;
+vel1=10000;
+vel2=1000;
+vel3=1000;
+###################
+
+###################
+# Packet capture Length (caplen)
+#	0 = full packet
+#	x>0 = first x bytes
+# E.g.:
+#       caplen0=60; <---- only the 60 first bytes for packets coming through hpcap0 will be captured
+#       caplen1=0;  <---- the full packet will be captures for traffic coming through hpcap1
+caplen0=0;
+caplen1=0;
+caplen2=0;
+caplen3=0;
+###################
+
+###################
+# Number of pages for each interfaces's kernel buffer
+# Total amount of pages: HPCAP_BUF_SIZE/PAGESIZE
+#		echo $(( $(( $(cat include/hpcap.h | grep HPCAP_BUF_SIZE | tail -n 1 | awk '{print $4}' | tr -d "ul") )) / $(getconf PAGESIZE) ))
+# The minimal value for an interface in hpcap mode is 1
+#
+# E.g.:
+#       pages0=1; <---- 1 page for hpcap0's kernel buffer
+#       pages1=1024;  <---- 1024 pages for hpcap1's kernel buffer
+#
+# with 4MByte pages:
+#	1 GB = 262144 pages
+#	512 MB = 131072
+#
+# This parameter is ignored if the interface is in mode 3 - hugepages.
+pages0=1;
+pages1=1;
+pages2=1;
+pages3=1;
+###################
+
+
+###################
+# Enable the monitors to be launched automatically.
+monitor_enabled=1;
+###################
+
+###################
+# Monitor script sampling interval (seconds)
+#	must be >0
+monitor_interval=1;
+###################
+
+###################
+# Core on which monitoring scripts will be executed on
+#	must be >= -1
+#	a value of -1 means the last core
+#	a value greater or equal than zero means the specified core
+monitor_core=-1;
+###################
+
+
+###################
+# Where to place the monitor log output.
+# Only for installations. HPCAP running from source
+# will still save the logs in the data directory.
+monitor_basedir=/var/log/hpcap;
+###################
+
+###################
+# Buffer size for hugepages mappings.
+# 	Can be human-readable (e.g., 20G, 1024K, 1M)
+# 	Will be aligned to hugepage size at runtime.
+# 	Only for interfaces in mode 3.
+###################
+
+hugesize0=2G;
+
+
+#####################################################################
+#####################################################################

@@ -1,0 +1,32 @@
+#!/bin/bash
+
+drivname=$1
+conf=$2
+extra_cflags=$3
+vars_mkpath=$4
+
+cat << EOF
+
+DRIVER_NAME = $drivname
+
+SELF_DIR := \$(dir \$(lastword \$(MAKEFILE_LIST)))
+
+CFILES = \$(notdir \$(wildcard \$(SELF_DIR)/*.c))
+HFILES = \$(notdir \$(wildcard \$(SELF_DIR)/*.h))
+TARGET = \$(DRIVER_NAME).ko
+
+include $vars_mkpath
+
+OPTIONAL_CFILES = ixgbe_fcoe.c ixgbe_dcb_nl.c en_dcb_nl.c ixgbe_ptp.c
+
+# EXTRA_CFILES is the list of files that can be included depending on
+# the kernel config. We want to exclude from the build those that weren't
+# included.
+EXCLUDED_CFILES = \$(filter-out \$(EXTRA_CFILES), \$(OPTIONAL_CFILES))
+EXCLUDED_CFILES += \$(PRE_EXCLUDED_CFILES)
+
+EXTRA_CFLAGS += \$(CFLAGS_EXTRA)
+EXTRA_CFLAGS += $extra_cflags
+obj-m += \$(DRIVER_NAME).o
+\$(DRIVER_NAME)-objs := \$(patsubst %.c, %.o, \$(filter-out \$(EXCLUDED_CFILES), \$(CFILES)))
+EOF

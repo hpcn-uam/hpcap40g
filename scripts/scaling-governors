@@ -1,0 +1,71 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./:${PATH}:/sbin/
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+function usage()
+{
+	echo "Checks the behavior of scaling governors and changes it if required"
+	echo "Usage: scaling-governors action"
+	echo "where action is one of: "
+	echo "- check: Returns the scaling governor configurations of HPCAP active cores"
+	echo "- performance: Sets the scaling governor of HPCAP active cores to performance"
+	echo "- performance-all: Sets all scaling governors to performance"
+	exit 0
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ] || [ -z "$1" ]; then
+	usage
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./../params.cfg ]; then
+	paramfile=./../params.cfg
+	logdir=./../data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+if [ "$1" == "check" ]; then
+	for core in $(get_active_cores); do
+		# get_iface_in_core only detects the first core of each interface.
+		# Assume they are sequential, so only change the value "iface" when
+		# we find another interface's core.
+		if [ ! -z "$(get_iface_in_core $core)" ]; then
+			iface="$(get_iface_in_core $core)"
+		fi
+
+		governor=$(get_scaling_governor_of $core)
+		echo "Core ${core} (${iface}): ${governor}"
+	done
+elif [ "$1" == "performance" ]; then
+	for core in $(get_active_cores); do
+		set_scaling_governor_of $core performance
+		echo "Core ${core} configured in performance mode"
+	done
+elif [ "$1" == "performance-all" ]; then
+	num_cores=$(grep -c ^processor /proc/cpuinfo)
+	echo "Found $num_cores cores"
+
+	for core in $(seq 0 $(( num_cores - 1 )) ) ; do
+		set_scaling_governor_of $core performance
+		echo "Core ${core} configured in performance mode"
+	done
+else
+	usage
+fi
+

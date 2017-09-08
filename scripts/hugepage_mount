@@ -1,0 +1,27 @@
+#!/bin/bash
+
+hugetlb_path_default="/mnt/hugetlb"
+
+mounted_tlb=$(mount | grep "type hugetlbfs" | awk '{print $3}' | head -n 1)
+hugepages=$(grep HugePages_Total /proc/meminfo | awk '{print $2}' | head -n 1)
+
+if [ -z "$hugepages" ] || [ $hugepages -le 0 ]; then
+	echo "This system has zero hugepages configured. Please change the boot parameters."
+	echo "You should add, e.g., 'default_hugepagesz=1G hugepagesz=1G hugepages=8' to the "
+	echo "'linux' command parameters in your grub.cfg file."
+	exit 1
+fi
+
+
+if [ -z "$mounted_tlb" ]; then
+	echo "No mounted hugetlb FS found."
+	mkdir -p $hugetlb_path_default
+	mount -t hugetlbfs none $hugetlb_path_default
+	chmod a+rw $hugetlb_path_default
+
+	echo "Created hugetlbfs at default path: $hugetlb_path_default"
+else
+	echo "Found hugetlb at $mounted_tlb"
+fi
+
+exit 0

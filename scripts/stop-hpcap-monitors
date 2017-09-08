@@ -1,0 +1,50 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./:${PATH}:/sbin/
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	echo "Stops the monitors for the HPCAP interfaces configured."
+	echo "Usage: stop-hpcap-monitors"
+	exit 0
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./../params.cfg ]; then
+	paramfile=./../params.cfg
+	logdir=./../data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+ifs=$(read_value_param ifs)
+
+for iface in $ifs; do
+	pidfile=$logdir/${iface}-monitor.pid
+
+	if [ -e $pidfile ]; then
+		pid=$(cat $pidfile)
+
+		if kill -0 $pid &> /dev/null; then
+			echo "Terminating monitor for interface $iface."
+			kill -TERM $pid
+		else
+			echo "PID file for monitor on interface $iface exists, but the process is not running."
+			rm $pidfile
+		fi
+	fi
+done

@@ -1,0 +1,99 @@
+# Build files
+*.a
+*.o
+
+.sstash
+
+# Doxygen documentation
+doc/html
+doc/latex
+doc/man
+
+# Because SVN is special and fairly weird and doesn't recognize the
+# dark magic that subdirectories are.
+html
+latex
+man
+
+obj
+bin
+lib
+
+# Version files
+driver/common/hpcap_version.h
+hpcap_version.h
+.gitversion
+
+# Packaging files
+VERSION_CHANGELOG
+VERSION.txt
+*.tar.gz
+.ixgbe_changelog*
+
+hpcap_data.png
+
+# Latex auxiliar files
+*.auxlock
+*.nb
+*.acn
+*.acr
+*.alg
+*.aux
+*.bbl
+*.blg
+*.dvi
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.ist
+*.lof
+*.log
+*.lot
+*.maf
+*.mtc
+*.mtc0
+*.nav
+*.nlo
+*.out
+*.pdfsync
+*.ps
+*.snm
+*.synctex.gz
+*.toc
+*.vrb
+*.xdy
+*.tdo
+*.ithmc
+.fuse*
+*.kate-swp
+*.backup
+*.synctex.gz(busy)
+*.pyg
+_minted*
+
+# Gitinfo files
+*.gin
+
+# Kernel build files
+.*.cmd
+*.ko
+*.symvers
+modules.order
+.tmp_versions
+*.mod.c
+
+# Sublime project files
+*-workspace
+
+# Other files that SVN doesn't want to ignore because it's special.
+cscope.out
+
+# Configuration files
+params.cfg
+hpcap-test.cfg
+

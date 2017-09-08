@@ -1,0 +1,76 @@
+#!/bin/bash
+# This test may help to uncover issues with buffers that are overfilled
+# or counters that overflow/overrun the expected values.
+
+begin_test "Small buffer"
+
+buffer_pages=$((small_buffer_size_MB * 1024 / 4))
+
+mv params.cfg old_params.cfg
+
+recv_iface="hpcap${receiver_port}"
+
+# Replace the configuration for the receiver port
+awk -vport=$receiver_port -vpages=$buffer_pages '
+BEGIN { pattern_pages = "pages"  port; pattern_mode = "mode" port }
+$0 ~ pattern_pages 	{ print pattern_pages "=" pages ";" }
+$0 ~ pattern_mode 	{ print pattern_mode "=2;" }
+$0 !~ pattern_pages && $0 !~ pattern_mode { print }
+' old_params.cfg > params.cfg
+
+reinstall_hpcap
+
+# Reinstate the old config file
+mv old_params.cfg params.cfg
+
+ensure_link $recv_iface
+
+base_losses=$(get_iface_losses $recv_iface)
+base_rx=$(get_iface_rx $recv_iface)
+receiver_core=$(get_core_for_receiver $receiver_port)
+
+trap on_exit EXIT
+
+log "Starting hpcapdd in core $receiver_core with port $receiver_port"
+
+sudo taskset -c $receiver_core bin/release/hpcapdd $receiver_port 0 null >> $logfile 2>&1 &
+hpcapdd_pid="$!"
+
+if ! is_pid_running $hpcapdd_pid &> /dev/null ; then
+	log "hpcapdd did not start correctly"
+	test_fail_die # I should get all this if into a function, but for now it works.
+fi
+
+log "hpcapdd running"
+
+framesize=1012 # Try to fill the buffer with frames, without gaps or padding.
+
+# Settings for the generator (rate, framesize) are loaded from the config file
+start_generator $small_buffer_genrate_Mbps $framesize
+
+log "Waiting for test to complete..."
+
+sleep $small_buffer_gen_duration_seconds
+
+log "Woke up, stopping."
+
+sudo kill -TERM $hpcapdd_pid >> $logfile 2>&1
+stop_generator
+
+final_losses=$(get_iface_losses $recv_iface)
+final_rx=$(get_iface_rx $recv_iface)
+loss_pctg=$(bc <<< "scale=3; 100 * $final_losses / ($final_losses + $final_rx)")
+
+
+log "Final losses: $final_losses, $loss_pctg % (there were $base_losses before the test)"
+log "Final rx bytes: $final_rx (there were $base_rx before the test)"
+
+if (( $(bc <<< "$loss_pctg > $small_buffer_max_loss_pctg") )) ; then
+	log "Loss percentage is too high"
+	test_fail
+else
+	test_ok
+fi
+
+# Reinstall HPCAP with previous configuration
+reinstall_hpcap

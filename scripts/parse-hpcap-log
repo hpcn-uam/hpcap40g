@@ -1,0 +1,190 @@
+#!/bin/bash
+
+file=$1
+tmp_data=/tmp/hpcap_processed
+max_records=-1
+
+function usage()
+{
+	echo "usage: parse_hpcap_log file [monitor_interval - default 1]"
+}
+
+function epoch_to_date()
+{
+	date -d @$1 2>/dev/null || date -r $1
+}
+
+if [ "$1" = "-h" ] || [ "$1" == "--help" ]; then
+	usage
+	exit 0
+fi
+
+[ -z "$file" ] && usage && exit 1
+
+monitor_interval=1
+
+if [ ! -z "$2" ]; then
+	monitor_interval=$2
+fi
+
+echo "Parsing log $file with monitor interval $monitor_interval"
+echo
+
+# We want to see where the interesting data begins. So, we discard the beginning and the end
+# of the file, until we see lines that either have frames received or lost. All the "0 0 0 0"
+# lines with no information get discarded. We also replace negative numbers with 0, to avoid
+# resets messing with the code.
+#
+# We just have to do some bash magic to get the beginning and ending line numbers.
+begin_line=$(< "$file" sed 's/-[[:digit:]]+/0/g' | awk '$3 != "0" || $5 != "0"{ print NR; exit }')
+end_line_rev=$(cat "$file" | sed 's/-[[:digit:]]+/0/g' | (tac 2> /dev/null || tail -r 2>/dev/null) | awk '$3 != "0" || $5 != "0" { print NR; exit }')
+line_num=$(< "$file"  wc -l)
+end_line=$((line_num - end_line_rev + 1))
+data_lines_num=$((end_line - begin_line))
+
+echo "Data TX ($data_lines_num lines) begins at line $begin_line, ends at $end_line"
+
+# Generate a temporal processed file with just the interesting records and
+# with additional columns, such as the accumulated statistics.
+< "$file" sed 's/-[[:digit:]]+/0/g' | head -n $end_line | awk  -v f_begin=$begin_line 'NR >= f_begin {
+	rx_bytes += $2;
+	rx_pkt += $3;
+	rx_errs += $5;
+	print NR - f_begin, $2, $3, $4, $5, rx_bytes, rx_pkt, rx_errs, $1
+}' > $tmp_data
+
+if [ $max_records -ge 1 ]; then
+	head -n $max_records $tmp_data > $tmp_data.tmp
+	mv $tmp_data.tmp $tmp_data
+fi
+
+time_end=$(tail -n 1 $tmp_data | awk '{ print $1 }')
+date_begin=$(epoch_to_date $(head -n 1 $tmp_data | awk '{ print $9 }'))
+date_end=$(epoch_to_date $(tail -n 1 $tmp_data | awk '{ print $9 }'))
+runtime=$(( ( time_end + 1 ) * monitor_interval ))
+total_bytes_rx=$(tail -n 1 $tmp_data | awk '{ print $6 }')
+total_bits_rx=$((total_bytes_rx * 8))
+total_pkt_rx=$(tail -n 1 $tmp_data | awk '{ print $7 }')
+total_gb_rx=$((total_bytes_rx / (1000 * 1000 * 1000) ))
+total_pkt_err_rx=$(tail -n 1 $tmp_data | awk '{ print $8 }')
+rx_speed=$((total_bits_rx / runtime))
+rx_speed_gb=$(bc <<< "scale=3; $rx_speed / (1000 * 1000 * 1000)")
+
+if [ $total_pkt_rx -eq 0 ]; then
+	total_pkt_err_rx_perc="-"
+else
+	total_pkt_err_rx_perc=$(bc <<< "scale=5; 100 * $total_pkt_err_rx / $total_pkt_rx" )
+fi
+
+max_speed=$( awk 'NR == 1 {max = $2} $2 > max { max=$2 } END { print max }' $tmp_data )
+min_speed=$( awk 'NR == 1 {min = $2} $2 < min { min=$2 } END { print min }' $tmp_data )
+max_speed_gb=$(bc <<< "scale=3; 8 * $max_speed / (1000 * 1000 * 1000)")
+min_speed_gb=$(bc <<< "scale=3; 8 * $min_speed / (1000 * 1000 * 1000)")
+
+
+echo "Total runtime: $runtime seconds."
+echo "Test began $date_begin, ended $date_end."
+echo "Transmitted $total_gb_rx GB ($total_bytes_rx bytes), $total_pkt_rx packets."
+echo "Average speed: $rx_speed_gb Gbps ($rx_speed bps)."
+echo "Max speed: $max_speed_gb Gbps. Min speed: $min_speed_gb Gbps ($min_speed bps)".
+echo "Packets with errors: $total_pkt_err_rx ($total_pkt_err_rx_perc %)."
+echo
+
+echo "Test timeline:"
+
+print_lost_frames=no
+previous_lost_frames=0
+previous_rx_frames=0
+previous_rx_bytess=0
+previous_event_duration=0
+
+while read -r cnt i rx_bytes err_bits acc_rx_bytes acc_rx_pkt acc_errs ts rx_pkt err_pkt; do
+	elapsed_secs=$((i * monitor_interval))
+	event_duration=$((cnt * monitor_interval))
+	rx_frames=$((acc_rx_pkt - previous_rx_frames))
+	rx_bytes=$((acc_rx_bytes - previous_rx_bytes))
+	rx_mbits=$(bc <<< "scale=2; 8 * $rx_bytes / (1000 * 1000)")
+
+	# Just to show how many frames were lost if we detected them
+	# in the previous line.
+	if [ $print_lost_frames = "yes" ]; then
+		lost_frames=$((acc_errs - previous_lost_frames))
+		echo -n "Lost $lost_frames frames. "
+		print_lost_frames="no"
+	fi
+
+	if [ $previous_event_duration -ne 0 ] && [ $rx_bytes -ne 0 ]; then
+		rx_speed_gbps=$(bc <<< "scale=3; 8 * $rx_bytes / ($previous_event_duration * 1000 * 1000 * 1000)" )
+		echo "Received $rx_frames frames, $rx_mbits Mbits, $rx_speed_gbps Gbps."
+	fi
+
+	echo -n "At $(epoch_to_date $ts) (ts $ts, elapsed $elapsed_secs secs) "
+
+	if [ $err_pkt -ne 0 ]; then
+		echo -n "losses "
+		previous_lost_frames=$acc_ers
+		print_lost_frames="yes"
+	else
+		echo -n "all ok "
+	fi
+
+	previous_event_duration=$event_duration
+	previous_rx_frames=$acc_rx_pkt
+	previous_rx_bytes=$acc_rx_bytes
+
+	echo -n "($event_duration secs). "
+
+done < <(awk '{print $1,$2,$4,$6,$7,$8,$9,$3,$5 }' $tmp_data  | awk '$9 > 0 { $9 = 1 } $8 > 0 { $8 = 1 } { print }' | uniq -c -f 7)
+# This line above is, as you can see, an ugly hack.
+#
+# This ugly hack does however a very useful thing, which is a simulation
+# of the "GROUP BY" SQL clause: we group by the error count.
+#
+# To do that, we first move the fields we want to group by (the third and fifth, frame rx and losses)
+# to the last columns using that ugly AF awk command that surely could be replaced by
+# something prettier. Doing this, we will be able to use the -f argument of uniq
+# to ignore the first 7 parameters and grouping only by the last two.
+#
+# We also replace the error count so it's only 1 or 0: we don't care about the exact number,
+# we want to just know if there were or weren't errors. We replace any number not equal to 0
+# with a "1" so uniq can group as we want it to do.
+
+rx_frames=$((total_pkt_rx - previous_rx_frames))
+rx_bytes=$((total_bytes_rx - previous_rx_bytes))
+rx_speed_gbps=$(bc <<< "scale=3; 8 * $rx_bytes / ($previous_event_duration * 1000 * 1000 * 1000)" )
+rx_mbytes=$(bc <<< "scale=2; $rx_bytes / (1000*1000)")
+
+if [ $print_lost_frames = "yes" ]; then
+	lost_frames=$((total_pkt_err_rx - previous_lost_frames))
+	echo "Lost $lost_frames frames"
+	print_lost_frames="no"
+fi
+
+echo "Received $rx_frames frames, $rx_mbytes MB, $rx_speed_gbps Gbps."
+
+if which gnuplot &> /dev/null; then
+	echo "Generating gnuplot charts. A plot is outputted to hpcap_data.png"
+	gnuplot_xrange_margin=$((- 5 * time_end / 100))
+
+	cat > /tmp/gnuplot_hpcap_script <<EOF
+set yrange [0:*]
+set xrange [$gnuplot_xrange_margin:*]
+set xlabel "Time (seconds)"
+set ylabel "Gbps"
+set y2label "Frames"
+set grid x y
+set y2tics nomirror
+
+plot '$tmp_data' u 1:(\$2 * 8 / (1000 * 1000 * 1000)) w l title 'RX speed (Gbps)' axis x1y1, \
+	'$tmp_data' u 1:(\$4 * 8 / (1000 * 1000 * 1000)) w l title 'RX Error Speed (Gbps)' axis x1y1, \
+	'$tmp_data' u 1:8 w l title 'Accumulated losses (Frames)' axis x1y2 lw 2
+
+set terminal pngcairo size 1920,1080
+set output 'hpcap_data.png'
+replot
+EOF
+
+	gnuplot /tmp/gnuplot_hpcap_script
+	rm /tmp/gnuplot_hpcap_script
+fi
+

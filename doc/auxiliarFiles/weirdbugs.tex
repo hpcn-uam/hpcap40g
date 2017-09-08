@@ -1,0 +1,180 @@
+% -*- root: ../HPCAP_DevGuide.tex -*-
+\section{Bugs, system errors and known issues}
+\label{sec:bugs}
+
+This section shows the bugs that have been found during the development and use of the driver, hoping that it gives the reader some ideas when the driver and/or the kernel have turned crazy and decided not to work.
+
+\subsection{Driver/system corruption after system crash}
+\label{sec:bugs:drivercorrupt}
+
+\begin{bugdata}
+\bugfixed[06b9ec8: insmod: Blacklist hpcap and ixgbe to avoid loading them at unusual times
+]
+\versions{4.2.0, 4.2.1}
+\end{bugdata}
+
+During the testing of HPCAP 4.2.1, the system crashed because of unknown issues while HPCAP was receiving traffic. The driver was installed to the system. After a reboot, something was corrupted: both \textit{ixgbe} and \textit{hpcap} were loaded at boot (even though none of them was configured to do so) and could not be removed. Trying to install the module again resulted in either errors or \textit{modprobe/insmod} hanging.
+
+It seems that, after a crash, the Linux kernel tries to reload the modules in some weird fashion, reloading both \textit{ixgbe} and \textit{hpcap} and causing some weird conflicts, including errors in the Intel Direct Cache Access subsystem (in some instances, the driver crashed on install with the stack trace pointing to \texttt{dca\_register\_notify}).
+
+% Comment to facilitate searching: dca_register_notify
+
+The fix was to blacklist both drivers in the \textit{modprobe} configuration that was already being generated on install. When the error happened, the system could be restored running \texttt{depmod -a \&\& update-initramfs -u} with \textit{root} permissions, or reinstalling the kernel.
+
+\subsection{Segmentation fault on client applications}
+
+\begin{bugdata}
+\bugfixed[9f21f1f: Fix concurrency issue when adding listeners]
+\versions{4.1.0 and previous}
+\end{bugdata}
+
+Sometimes, when multiple clients open the same HPCAP handle at the same time (for example, \sysobj{monitor\_flujos} opens two handles on the same file), a race condition may occur and the listener identifications will not be registered correctly. This causes messages in the kernel log warning about some ``listener not found'' and possibly a segmentation fault when issuing \texttt{ioctl} calls. The solution was to properly protect critical sections of the code that can be read and written concurrently.
+
+\subsection{modprobe/insmod: Cannot allocate memory}
+
+\begin{bugdata}
+\bugnotfixed
+\versions{All}
+\end{bugdata}
+
+There are several possible causes. If the error is raised by the HPCAP driver, you should see a line in the kernel log explaining what happened and how to correct the error\footnote{If the message appears but does not tell how to fix the error or does not explain what's happening, tell the maintainer to change that error message.}.
+
+However, if the kernel log doesn't show any message from \textit{hpcap}, it may be an issue with available memory in the kernel. The Linux kernel has a certain memory space assigned to load modules\footnote{See \href{https://www.kernel.org/doc/Documentation/x86/x86_64/mm.txt}{the kernel documentation about the matter}.}, usually about 1.5GB. It's more than enough for regular uses of modules, but not in the case of HPCAP. HPCAP allocates a static buffer of 1GB that will be shared between the different queues. This buffer is placed on that module mapping space\footnote{It may be possible that I'm wrong here about this.} so, if several modules have already reserved more than 500 MB, the kernel may refuse to load our module.
+
+The workaround for this is to reduce the buffer size (modify the macro \codeobj{HPCAP\_BUF\_SIZE} in the \fileobj{include/hpcap.h} file) and, if necessary, to use hugepages (see \fref{sec:Hugepages}) to get buffers of the necessary size. I haven't found any way to see the memory usage of each driver nor how to see how much of that module mapping space is already allocated.
+
+\subsection{Interfaces renamed automatically by udev}
+\label{sec:bugs:IfaceRenaming}
+
+\begin{bugdata}
+\bugfixed[r715: insmod: workaround for udev renaming rules, r807]
+\versions{4.2.2 and previous}
+\end{bugdata}
+
+In some systems, udev has some ``smart'' renaming rules \href{http://www.freedesktop.org/wiki/Software/systemd/PredictableNetworkInterfaceNames/}{that theoretically gives a predictable naming to the network interfaces}. That interferes heavily with HPCAP. The workaround consists in a small check in the \codeobj{interface\_up\_hpcap} bash function, that will check in the kernel log for \textit{udev} renamings and will undo them.
+
+An extra problem in some CentOS installations was that \textit{udev} did not even print in the kernel log these renames. This required an extra fix (revision 807 in \textit{mellanox} branch, merged into trunk in rev. 838), that consisted of a naming check (the actual function is called \codeobj{hpcap\_check\_naming}) that is called before launching the poll threads. This functions compares the current name of the interface to the expected one (\textit{hpcapX}, where \textit{X} is the adapter index): if they are different, it prints a message to the kernel log that will be picked up by the installation script so it can rename the interfaces.
+
+\subsection{Corrupted capture files}
+\label{sec:bugs:CorruptedCapture}
+
+\begin{bugdata}
+\bugfixed[r842, r869]
+\versions{4.2.3 and previous}
+\end{bugdata}
+
+A bug was discovered where the captures were being corrupted if another program had been listening previously. For example, if a first instance of \textit{hpcapdd} was launched and then closed, the resulting capture files were all correct. However, if a second instance was launched without reinstalling the drivers, all capture files would be corrupted.
+
+The actual issue had to to with how the clients (listeners) acquire their reading offsets. A first listener would start reading from offset 0, transferring blocks of a fixed size. When the client closed, HPCAP saved the last reading offset, which would not necessarily point to the beginning of a frame.
+
+Thus, when another new client tried to read from the HPCAP buffer, its reading offset was the last reading offset of the other client. This new client would begin saving the capture at the middle of a frame, so applications such as \textit{raw2pcap}, expecting to read first a correct packet header, would crash and/or output completely wrong results.
+
+A first solution was to assign as read offset the last writing offset of the HPCAP producer. New frames are written starting from that offset, so new listeners would start reading frames with the correct headers. However, this caused another extra problem: misaligned access to the buffer that could hurt performance. A fix for this issue is simply resetting the read/write offsets when there are no listeners: if there are no client applications, HPCAP will forget the last read/write offsets and will start writing frames from offset 0, thus avoiding misaligned access for new clients.
+
+A secondary bug appeared later, introduced by the first fix (r842): in some cases the global write offset would be advanced before the read offset of a new listener was configured. In these cases, the read offset would again be greater than 0 and would cause errors when writing the captures. This bug was fized in r869 by setting the read/write offsets in the intialization of the listener.
+
+\subsection{Connection failure / segfault on xgb interfaces}
+
+\begin{bugdata}
+\bugfixed[r826: ixgbe: Fix bug with ixgbe interfaces where next\_to\_use wasn't being updated and caused errors]
+\versions{4.2.3. Possibly previous versions, not checked}
+\end{bugdata}
+
+Interfaces configured in the \textit{xgb} mode were failing and/or crashing the system completely when they received data.
+
+The cause was that the \texttt{rx\_ring->next\_to\_use} pointer was not updated correctly. It should be updated in \codeobj{ixgbe\_release\_rx\_desc} to have the same value as the ring's tail pointer of the NIC, but the corresponding line was missing. This caused incoherencies between the ring status in software and in hardware, which in turn caused missing frames (thus the failing connections) and even crashes when the software tried to access to unallocated descriptors.
+
+\subsection{Connection reset after TX hang}
+
+\begin{bugdata}
+\bugfixed[r875, r876: ixgbe: Disable transmission and forced resets on TX hangs]
+\versions{4.2.3 and previous}
+\end{bugdata}
+
+If an application in the system tried to send frames through interfaces configured in HPCAP mode, it could trigger a reset in the interface that would lead to corrupted captures.
+
+The bug was that the \textit{ixgbe} driver would store the packets to send in a queue which was not flushed. Then, a watchdog (either in the driver or in the kernel) would notice\footnote{The exact message was \textit{initiating reset due to lost link with pending Tx work}.} and reset the adapter. This would in turn reset the poll thread and corrupt the capture.
+
+The solution was to discard frames to transmit in HPCAP adapters, and to disable the code that resets the adapter when using HPCAP work modes.
+
+\subsection{Loss of all frames}
+\label{sec:bugs:AllFramesLost}
+
+\begin{bugdata}
+\bugfixed[r963: hpcap: Fix bug where the driver was losing all frames]
+\end{bugdata}
+
+A misterious bug where at random times caused the driver to lose all frames. The cause was the padding check. When receiving a packet, if the space left in the capture file was exactly 2 RAW headers plus the incoming packet size, no padding would be written. The space left for the next frame was exactly the size of the RAW header, so the padlen, calculated as the remaining space in file \textit{minus the size of a RAW header} would be zero and no padding would be inserted. The file size would be also incremented, surpassing the value of \texttt{HPCAP\_FILESIZE} and either corrupting the memory space when writing with erroneous lengths or avoiding the reception of any packets as the driver would not have space to insert the padding with that size.
+
+\subsection{IOCK and MNG\_VETO bit enabled - capture thread stops}
+
+\begin{bugdata}
+\bugnotfixed
+\versions{pre-5.0.0, at least}
+\end{bugdata}
+
+In a certain installation, the driver would stop capturing after the system received a non-maskable interrupt about an IOCK error. There is not much documentation about this error, but it seems to be related with the hardware.
+
+The kernel log also showed a message from the base \textit{ixgbe} driver about a \texttt{MNG\_VETO}\index{MNG\_VETO} bit enabled. Reading the NIC datasheet \cite{825992010}, it seems to be a bit set up by the hardware when it is in low-power state that forbids link changes, so downed links would not be restored.
+
+As of 27/4/2016, this bug seems to be caused by the hardware.
+
+\subsection{Concurrent listeners leads to losses and/or data corruption}
+
+\begin{bugdata}
+\bugfixed[r959, r955]
+\versions{4.2.3 and previous}
+\end{bugdata}
+
+Several related errors happened when there was more than one client listening for data in a HPCAP interface. For example, if a listener connected first but did not read anything, a second listener would receive an advanced read offset (the last write from the polling thread). So, even when the two listeners could start reading data from the buffer at the same time they would see different data. This was fixed in revision 959.
+
+Another problem happened when two listeners connected to the driver and then the first one disconnected. The next listener to connect would receive handle ID 2, which was already being used. Data loss and/or corruption of the structures would then occur. This was fixed in revision 955.
+
+\subsection{Copies from/to user space can fail}
+
+\begin{bugdata}
+\bugfixed[r956: hpcap: Fix copies from/to the user memory]
+\versions{4.2.3 and previous}
+\end{bugdata}
+
+In the \texttt{ioctl} calls, the copies to and from user space memory were not being done with \texttt{copy\_to/from\_user} and, in strange instances where that memory was invalid, that could cause a segfault within the driver. With the fix, no invalid acceses are done and the correct error message is returned to the caller application.
+
+\subsection{Corrupted capture files after restarting a client}
+
+\begin{bugdata}
+\bugfixed[r893: hpcap: Reset written buffer size when there're no listeners]
+\versions{4.2.3 and previous}
+\end{bugdata}
+
+Related to bug \ref{sec:bugs:CorruptedCapture}, when restarting a listener, the captures would be subtly corrupted as the driver would not place the padding at the end of the file but in the middle instead. This happened because the filesize counter was not being reset if there were no listeners.
+
+\subsection{Problems when using buffers greater than 2GB}
+
+\begin{bugdata}
+\bugfixed[r990: hpcap: Fix several problems with buffers greater than 2G]
+\versions{4.2.X}
+\end{bugdata}
+
+When using hugepage-backed buffers with a size greater than 2GB, several variables would overflow and cause segfaults and memory errors.
+
+There is a secondary problem: when allocating buffers of size 4GB, the function \codeobj{vm\_map\_ram} used in the hugepage code will segfault due to a bug in the Linux kernel code. See \href{http://marc.info/?l=linux-mm&m=146114962421719&w=2}{the linux-mm mailing list} for more information. The patch was included in kernel version 4.7.
+
+\subsection{Frames with VLAN tags disappeared}
+
+\begin{bugdata}
+\bugfixed[r1025: ixgbe: Fix VLAN stripping]
+\versions{pre-5.0.0}
+\end{bugdata}
+
+During the update of the ixgbe base driver from 3.7.17 to 4.1.2, the VLAN stripping features were not correctly deactivated. This caused the card to strip the VLAN tags in hardware. The solution was to disable all hardware features in the correct location in the code.
+
+\subsection{RX Errors with no cause}
+
+\begin{bugdata}
+\bugnotfixed
+\versions{All}
+\end{bugdata}
+
+In some environments, the \textit{ethtool} counters for \texttt{rx\_errors} increment, but without CRC or length errors. These may be caused by corrupted non-Ethernet packets, such as malformed Cisco Spanning Tree Protocol (STP) frames. The solution was to make the NIC stop counting these frames as errors, disabling a certain register. This required to add the line \begin{verbatim}
+hlreg0 &= ~IXGBE_HLREG0_RXLNGTHERREN
+\end{verbatim} in \textit{ixgbe_main.c:4659}, in the \codeobj{ixgbe\_set\_rx\_buffer\_len} function.

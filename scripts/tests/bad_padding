@@ -1,0 +1,72 @@
+#!/bin/bash
+
+if ! lsmod | grep hpcap >> $logfile 2>&1 ; then
+	install_hpcap # Ensure everything is installed correctly
+fi
+
+begin_test "Bad padding"
+
+recv_iface="hpcap${receiver_port}"
+
+ensure_link $recv_iface
+
+base_losses=$(get_iface_losses $recv_iface)
+base_rx=$(get_iface_rx $recv_iface)
+receiver_core=$(get_core_for_receiver $receiver_port)
+
+trap on_exit EXIT
+
+log "Starting hpcapdd in core $receiver_core with port $receiver_port"
+
+taskset -c $receiver_core bin/release/hpcapdd $receiver_port 0 null >> $logfile 2>&1 &
+hpcapdd_pid="$!"
+
+if ! is_pid_running $hpcapdd_pid &> /dev/null ; then
+	log "hpcapdd did not start correctly"
+	test_fail_die # I should get all this if into a function, but for now it works.
+fi
+
+log "hpcapdd running"
+
+# Settings for the generator (rate, framesize) are loaded from the config file
+log "Using MoonGen for traffic generation"
+scp scripts/force-bad-padding.lua ${generator_ssh_host}:MoonGen &> $logfile
+
+log "Sending death frames through port $generator_port"
+
+generator_cmd="cd MoonGen; sudo ./build/MoonGen force-bad-padding.lua ${generator_port}"
+
+ssh -t $generator_ssh_host "$generator_cmd" >> $logfile 2>&1 &
+ssh_pid="$!"
+
+sleep 1
+
+if ! is_pid_running $ssh_pid &> /dev/null ; then
+	log "ssh remote command did not start correctly"
+	test_fail_die
+fi
+
+log "Waiting for test to complete..."
+
+sleep $bad_padding_gen_duration_seconds
+
+log "Woke up, stopping."
+
+kill -TERM $hpcapdd_pid >> $logfile 2>&1
+ssh -t $generator_ssh_host "sudo killall -INT MoonGen"
+sleep 3
+ssh -t $generator_ssh_host "sudo killall -TERM MoonGen" &> /dev/null
+sleep 1
+kill -TERM $ssh_pid >> $logfile 2>&1
+
+final_losses=$(get_iface_losses $recv_iface)
+final_rx=$(get_iface_rx $recv_iface)
+
+log "Final losses: $final_losses (there were $base_losses before the test)"
+log "Final rx bytes: $final_rx (there were $base_rx before the test)"
+
+if [ $final_losses -le 0 ] && [ $final_rx -gt $base_rx ]; then
+	test_ok
+else
+	test_fail
+fi

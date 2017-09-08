@@ -1,0 +1,55 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./:${PATH}:/sbin/
+
+drivname=$1
+
+echo "hpcap-modprobe: installing driver $drivname"
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# We suppose the script is placed in prefix/usr/bin
+paramfile=$(readlink -e ./../../etc/hpcap/params.cfg)
+
+echo "Parameter file: $paramfile"
+
+if ! is_paramfile_valid $paramfile ; then
+	echor "Invalid parameters. Exiting"
+	exit 1
+fi
+
+if [ "$drivname" = "hpcap" ]; then
+	vf=0
+else
+	vf=1
+fi
+
+if (lsmod | grep hpcap &> /dev/null) || (lsmod | grep ixgbe &> /dev/null); then
+	echo "Refusing to load HPCAP driver with conflicting drivers (hpcap, ixgbe) present"
+	exit 1
+fi
+
+args=$(parse_driver_args $paramfile $vf)
+
+echo "Arguments: $args"
+
+modprobe --ignore-install $drivname $args || die "Cannot load driver"
+
+ifs=$(read_value_param ifs)
+for iface in $ifs
+do
+	mode=$(read_value_param "mode$(get_iface_index $iface)")
+
+	echo "[ Setting up $iface in mode $mode... ]"
+	interface_up_hpcap $iface $mode $paramfile
+done
+
+if [ "$(read_value_param monitor_enabled)" = "1" ]; then
+	launch-hpcap-monitors
+fi

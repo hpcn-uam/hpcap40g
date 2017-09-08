@@ -1,0 +1,171 @@
+#!/bin/bash
+
+source funciones.bash
+
+#######################
+# PARAMS
+#######################
+
+dir=$(read_value_param basedir)
+driver=$(read_value_param version)
+vel=$(read_value_param vel)
+nrxq=$(read_value_param nrxq)
+ntxq=$(read_value_param nrxq)
+caplen=$(read_value_param caplen)
+rxmode=$(read_value_param rxmode)
+ifs=$(read_value_param ifs)
+itr=956
+dev="hpcap"
+major=$(cat ${dir}/${driver}/include/hpcap.h | grep "HPCAP_MAJOR" | awk '{print $3}')
+copylaunch=$(read_value_param copylaunch)
+
+# Affinity-related params
+num_nodes=$( numactl --hardware | grep cpus | wc -l )
+num_cores=$( cat /proc/cpuinfo | grep processor | wc -l )
+cores_per_node=$(( $num_cores / $num_nodes ))
+core_base1=$(read_value_param core_base)
+node_base1=$(( $core_base1 / $cores_per_node ))
+core_base2=$(( $core_base1 + $(( $nrxq * 2 )) ))
+node_base2=$(( $core_base2 / $cores_per_node ))
+
+
+
+
+#######################
+# CLEANING
+#######################
+
+#close conflicting applications
+echo "[ Killing apps ... ]"
+killall -s SIGINT apcap_forward
+#killall irqbalance
+killall copy.bash
+killall dd
+killall monitor.bash
+sleep 5
+
+#remove driver
+echo "[ Removing modules ... ]"
+remove_module "ixgbe"
+remove_module "ps_ixgbe"
+remove_module "hpcap"
+
+
+#######################
+# MOUNT RAID
+#######################
+echo "[ Mounting RAID disks ... ]"
+check_and_mount disco_capturas_0 /dev/sdb
+#check_and_mount disco_capturas_1 /dev/sdc
+
+
+#######################
+# INSTALLING
+#######################
+echo "[ Installing driver ... ]"
+#compile driver (if needed)
+cd  ${dir}/${driver}/driver
+if [ -f hpcap.ko ]
+then
+	echo "     -> No need to recompile"
+else
+	make clean
+	make
+fi
+args=""
+args+="RXQ=${nrxq},${nrxq} "
+args+="TXQ=${ntxq},${ntxq} "
+args+="InterruptThrottleRate=${itr},${itr} "
+args+="Node=${node_base1},${node_base2} "
+args+="Core=${core_base1},${core_base2} "
+args+="Caplen=${caplen},${caplen} "
+args+="RXmode=${rxmode},${rxmode} "
+cmd="insmod hpcap.ko $args"
+echo "     -> CMD = \"$cmd\""
+$cmd
+
+
+#######################
+# CREATING DEVICES AND SETTINGS
+#######################
+cd ${dir}/${driver}/scripts
+j=0
+for iface in $ifs
+do
+	echo "[ Setting up $iface ... ]"
+	for i in $(seq 0 $(( $nrxq -1 )) )
+	do
+		disp="${dev}_${iface}_$i"
+		rm -f /dev/${disp}
+		mknod /dev/${disp} c $(( $major + $j )) $i
+		chmod 666 /dev/${disp}
+	done
+	j=$(( $j + 1 ))	
+	ifconfig ${iface} up promisc
+	aux="core_base$j"
+	./affinity.py ${iface} ${!aux}
+	negocia_iface ${iface} $vel
+	sleep 1
+	check_iface_link ${iface}
+done
+echo ""
+echo "[ New char devices can found at /dev/ directory: ]"
+ls -l /dev | grep $dev
+echo ""
+
+
+#######################
+# COMPILE LIB
+#######################
+if [ $rxmode = 2 ] || [ $rxmode = 3 ]
+then
+	echo "[ Compiling HPCAP lib ... ]"
+	cd ${dir}/${driver}/lib
+	if [ -f libhpcap.a ]
+	then
+		echo "     -> No need to compile hpcap-lib"
+	else
+		make
+		echo "     -> Compiling hpcap-lib..."
+	fi
+else
+	echo "[ Not launching any packet processing application ]"
+fi
+
+
+#######################
+# LAUNCH MONITORING (if enabled)
+#######################
+echo "[ Launching monitoring script... ]"
+cd $dir
+for i in $(seq 0 $(( $j - 1 )) )
+do
+	echo "     -> ./monitor.bash xge$i"
+	nohup ./monitor.bash xge$i &
+done
+
+
+#######################
+# LAUNCH DD COPY (if enabled)
+#######################
+if [ $copylaunch = 1 ]
+then
+	cd $dir
+	echo "[ Launching dd threads ... ]"
+	for i in $(seq 0 $(( $j - 1 )) )
+	do
+		for k in $(seq 0 $(( $nrxq - 1 )) )
+		do
+			echo "     -> ./copy.bash $i $k"
+			nohup ./copy.bash $i $k &
+		done
+	done
+else
+	echo "[ Not launching dd threads ]"
+fi
+
+exit 0
+
+
+exit 0
+

@@ -1,0 +1,136 @@
+#!/bin/bash
+
+outdir=/tmp/hpcap-diagnostics-$(date +%F_%H-%M)
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+cd ..
+
+if [ ! -z "$1" ]; then
+	echo "diagnostics: HPCAP diagnostic collection tool"
+	echo "No arguments required."
+	exit
+fi
+
+echo -e "HPCAP Diagnostic collection tool\n"
+
+echo " - Compiling auxiliar tools..."
+make samples &>/dev/null
+
+export PATH=${PATH}:/sbin:./scripts
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./params.cfg ]; then
+	paramfile=./params.cfg
+	logdir=./data
+else
+	die "Parameter file (params.cfg) not found at $(pwd)/params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+echo " - Collecting basic system information..."
+mkdir -p $outdir
+
+cat << EOF > $outdir/basic-info
+Installation path: $(pwd)
+params.cfg: $(readlink -f $paramfile)
+Log directory: $(readlink -f $logdir)
+Kernel: $(uname -a)
+svnversion: $(cat .svnversion 2>&1 )
+
+lsb-release:
+$(cat /etc/lsb-release 2>&1)
+
+redhat-release:
+$(cat /etc/redhat-release 2>&1)
+
+Supported PCI devices:
+$(find_hpcap_pci_devs | awk '{ printf "Port %d: ", NR - 1; system("lspci -s" $1) }')
+
+EOF
+
+lspci > $outdir/lspci
+lsmod > $outdir/lsmod
+mount > $outdir/mount
+lstopo > $outdir/lstopo
+
+cp /proc/meminfo /proc/cpuinfo /proc/partitions $outdir/
+
+# Avoid some problems with unwritable files copied from /proc
+chmod ug+w $outdir/meminfo $outdir/cpuinfo $outdir/partitions
+
+ps -aux > $outdir/ps-aux
+dmesg -dkT > $outdir/dmesg
+
+echo " - Collecting crash logs..."
+
+mkdir -p $outdir/crash
+
+for log in $(find /var/crash -name "vmcore-dmesg.txt") ; do
+	dest=$(sed 's#/var/crash/##g' <<< $log | tr '/' '_')
+	cp $log $outdir/crash/$dest
+done
+
+echo " - Collecting HPCAP logs and information..."
+cp $paramfile $outdir/params.cfg
+cp -r $logdir $outdir/monitor_logs
+
+
+modinfo hpcap > $outdir/modinfo-hpcap
+modinfo bin/release/hpcap.ko > $outdir/modinfo-hpcap-compiled
+
+echo " - Collecting interface data..."
+mkdir -p $outdir/interfaces
+
+ifconfig -a > $outdir/interfaces/ifconfig
+
+ls -lah /dev | grep "hpcap" > $outdir/interfaces/cdevs
+
+if lsmod | grep hpcap &>/dev/null ; then
+	ifs=$(read_value_param ifs)
+	for iface in $ifs
+	do
+		idx=$(get_iface_index $iface)
+		mode=$(read_value_param "mode${idx}")
+
+		if [ $mode -ne 1 ]; then
+			bin/release/statusinfo $idx 0 > $outdir/interfaces/status-$iface
+		fi
+
+		ethtool -S $iface > $outdir/interfaces/stats-$iface 2>&1
+		ethtool $iface > $outdir/interfaces/ethtool-$iface 2>&1
+	done
+fi
+
+echo " - Collecting capture information..."
+
+> $outdir/captures
+
+for dir in $(ls / | grep -Ev "bin|boot|dev|etc|home|lib|lib64|opt|proc|root|run|sbin|srv|sys|usr|var") ; do
+	if [ -d /$dir ]; then
+		find /$dir -regex ".*[0-9]" | xargs ls -lahR >> $outdir/captures
+	fi
+done
+
+echo " - Compressing"
+dest_tar=hpcap-diagnostics-$(date +%F_%H-%M).tar.gz
+cwd=$(pwd)
+cd /tmp
+tar -czf $dest_tar $(basename $outdir)
+mv $dest_tar $cwd
+rm -rf $outdir
+
+echo
+echo "Done. Diagnostic file is $dest_tar."

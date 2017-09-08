@@ -1,0 +1,73 @@
+#!/usr/bin/env stap
+
+global bytes
+global fullbuf;
+global prev_packets;
+global packets;
+global t_start;
+global pps;
+global times;
+global iface;
+
+probe begin {
+	iface = strtol(@1, 10)
+}
+
+probe end {
+	printf("Bytes per batch: Avg %d\n", @avg(bytes))
+	printf("Packets per batch: Avg %d\n", @avg(packets))
+	printf("Time per batch (ns): Avg %d\n", @avg(times))
+	printf("Gpps: Avg %d\n", @avg(pps))
+
+	printf("Buffer state (2: emptied ring, 1: buffer was full, 0: ring was already empty).\n")
+	print(@hist_linear(fullbuf, 0, 2, 1))
+}
+
+probe timer.ms(1000) {
+	ansi_clear_screen()
+
+	printf("Bytes per batch: Avg %d\n", @avg(bytes))
+	print(@hist_log(bytes))
+
+	printf("Packets per batch: Avg %d\n", @avg(packets))
+	print(@hist_log(packets))
+
+	printf("Time per batch (ns): Avg %d\n", @avg(times))
+	print(@hist_log(times))
+
+	printf("Gpps: Avg %d\n", @avg(pps))
+	print(@hist_log(pps))
+
+	printf("Full buffers status\n");
+	print(@hist_linear(fullbuf, 0, 2, 1))
+}
+
+probe module("hpcap").function("hpcap_rx") {
+	if ($rx_ring->buf->adapter == iface) {
+		t_start = gettimeofday_ns()
+	}
+}
+
+probe module("hpcap").function("hpcap_rx").return {
+	if ($rx_ring->buf->adapter == iface) {
+		bytes <<< $return
+		packets <<< read_descriptors;
+
+		if ($return + 12 + 1500 >= $limit)
+			fullbuf <<< 1
+		else if ($return  == 0)
+			fullbuf <<< 0
+		else
+			fullbuf <<< 2
+
+		t_end = gettimeofday_ns();
+		total = (t_end - t_start);
+
+		if (t_start != 0) {
+			times <<< total;
+
+			if (this_packets > 0)
+				pps <<< (this_packets / total);
+		}
+	}
+}

@@ -1,0 +1,66 @@
+#!/bin/bash
+
+source funciones.bash
+
+#######################
+# PARAMS
+#######################
+
+dir=$(read_value_param basedir)
+driver=$(read_value_param version)
+ifindex=$1
+iface="xge${ifindex}"
+queue=$2
+dev="hpcap_${iface}_${queue}"
+disk="disco_capturas_$ifindex"
+#disk="mnt"
+nrxq=$(read_value_param nrxq)
+core_base=$(read_value_param core_base)
+core_base=$(( $core_base + $(( $ifindex * $(( $nrxq * 2 )) )) ))
+core_mask=$(( 1 << $core_base ))
+#TAMANO DE BLOQUE DE TRANSFERENCIA
+chunksize=$( cat ${dir}/${driver}/include/hpcap.h | grep "#define CHUNK_SIZE" | awk '{print $3}' )
+iblock=$( cat ${dir}/${driver}/include/hpcap.h | grep "#define DD_IBS" | awk '{split($3,aux,"u");print aux[1]}' )
+oblock=$( cat ${dir}/${driver}/include/hpcap.h | grep "#define DD_OBS" | awk '{split($3,aux,"u");print aux[1]}' )
+#CANTIDAD DE BLOQUES A TRANSFERIR
+count=$( cat ${dir}/${driver}/include/hpcap.h | grep "#define DD_COUNT" | awk '{split($3,aux,"u");print aux[1]}' )
+
+logfile="${dir}/log_dd_${iface}_$(date +%Y_%m_%d_%H_%M)"
+
+
+echo "Se copiaran " $count " bloques de " $iblock " bytes (se lanza en el core " $core_base " [ 0x" $core_mask " ]" >> ${logfile}.txt
+echo "taskset -c $(( ${core_base} + 1 )) dd if=/dev/${dev} ibs=${iblock} iflag=fullblock of=/${disk}/<hora>/<segundo>.raw obs=${oblock} oflag=direct count=$count" >> ${logfile}.txt
+
+j=0
+i=0
+desmonta=0
+while [ 1 ]
+do
+	date >> ${logfile}.txt
+	nombre=$(date +%s)
+	hora=$(( $(( $nombre / 1800 )) * 1800 ))
+	#echo ${odir}/${hora}/${nombre}.raw
+	mkdir -p /${disk}/${hora}
+
+	###taskset -c $(( ${core_base} + 1 )) dd if=/dev/${dev} ibs=${iblock} iflag=fullblock of=/${disk}/${hora}/${nombre}.raw obs=${oblock} count=$count >> ${logfile}.txt
+	taskset -c $(( ${core_base} + 1 )) nice -n 20 dd if=/dev/${dev} bs=${iblock} iflag=fullblock of=/${disk}/${hora}/${nombre}.raw oflag=direct count=$count >> ${logfile}.txt
+	#taskset -c $(( ${core_base} + 1 )) nice -n -20 dd if=/dev/${dev} bs=${iblock} iflag=fullblock of=/dev/null count=$count >> ${logfile}.txt
+	##taskset -c $(( ${core_base} + 1 )) nice -n -20 dd if=/dev/${dev} bs=${iblock} iflag=fullblock of=/dev/null count=$count >> ${logfile}.txt
+	
+	###taskset -c $(( ${core_base} + 1 )) dd if=/dev/${dev} ibs=${iblock} iflag=fullblock of=/dev/null obs=${oblock} count=$count >> ${logfile}.txt
+
+	##taskset -c $(( ${core_base} + 1 )) ${dir}/${driver}/samples/hpcapdd/hpcapdd $ifindex $queue /${disk}/${hora}/${nombre}.raw ${iblock} $(( $count * 1))
+
+	j=$(( $j + 1 ))
+	if [ $j -eq $desmonta ]
+	then
+		j=0
+		i=$(( $i + 1 ))
+		umount /disco_capturas_0
+		mount -t xfs /dev/sdb /disco_capturas_0
+		echo despues de umount/mount $i `date` `date +%s.%N`
+	fi
+
+
+done
+

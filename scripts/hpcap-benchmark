@@ -1,0 +1,248 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./scripts:${PATH}:/sbin
+
+if [ "$1" = "-h" ]; then
+	echo "pending help"
+	exit 0
+elif [ -z "$1" ]; then
+	filename_appendix=""
+else
+	filename_appendix="-$1"
+fi
+
+# Load extra functions
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	die "hpcap-benchmark can only run from the source folder."
+elif [ -e ./../params.cfg ]; then
+	paramfile=./params.cfg
+	logdir=./data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+function log()
+{
+	echo "[$(date +"%d-%m-%Y %H:%M:%S")] $@" >> $logfile
+}
+
+function test_fail_die()
+{
+	log "Aborting"
+	exit 1
+}
+
+function ensure_hpcap_installed()
+{
+	begin_test "HPCAP insmod"
+
+	log "Begin installation with install_hpcap.bash"
+	if ! sudo ./install_hpcap.bash >> $logfile 2>&1 ; then
+		test_fail_die
+	fi
+
+	log "Installation reports everything ok. Checking with lsmod"
+
+	if ! lsmod | grep hpcap >> $logfile 2>&1 ; then
+		log "HPCAP driver not installed"
+		test_fail_die
+	fi
+
+	test_ok
+}
+
+function on_exit() # Called by trap
+{
+	log "Cleaning up running processes"
+	stop_generator
+	is_pid_running $ssh_pid && kill -INT $ssh_pid &> /dev/null && wait $ssh_pid
+	is_pid_running $hpcapdd_pid && kill -INT $hpcapdd_pid &> /dev/null && wait $hpcapdd_pid
+	log "All processes killed"
+}
+
+trap on_exit EXIT
+
+cd .. # We are in the scripts folder. Go back to the base source folder
+
+if ! source hpcap-test.cfg ; then
+	echor "hpcap-test.cfg configuration file not found."
+	exit 1
+fi
+
+logfile="/dev/stderr"
+date_ts=$(date +"%Y%m%d_%H%M")
+resultfile="benchmark-${date_ts}${filename_appendix}.dat"
+generator_out="/tmp/hpcap-benchmark-tmp"
+
+
+> $logfile # Clear the logfile
+
+log "Checking driver status..."
+
+if ! lsmod | grep hpcap &> /dev/null ; then
+	log "HPCAP driver not installed, installing."
+
+	if ! sudo ./install_hpcap.bash &> /dev/null ; then
+		log "./install_hpcap.bash failed. Aborting."
+		exit 1
+	fi
+
+	if ! lsmod | grep hpcap  &> /dev/null ; then
+		log "./install_hpcap.bash succeeded, but hpcap driver not installed. Aborting."
+		exit 1
+	fi
+fi
+
+log "Driver installed. Preparing test tools..."
+
+if [ "$generator_mode" = "moongen" ]; then
+	scp scripts/fixed-rate.lua ${generator_ssh_host}:MoonGen > /dev/null
+elif [ "$generator_mode" = "fpga" ] ; then
+	log "Using FPGA generator"
+elif [ "$generator_mode" = "hpcn_latency" ]; then
+	log "Using hpcn_latency generator"
+else
+	log "Unknown generator mode $generator_mode"
+	exit 1
+fi
+
+recv_iface="hpcap${receiver_port}"
+
+ensure_link $recv_iface
+
+if [ -z $receiver_core ]; then
+	receiver_core=$(get_core_for_receiver $receiver_port)
+fi
+
+if [ "$enabled_hpcapdd_spdk" = "true" ]; then
+	log "Starting hpcapdd_spdk"
+
+	${hpcapdd_spdk_path}/hpcapdd_spdk >> $logfile 2>&1 &
+	hpcapdd_pid="$!"
+
+	if ! is_pid_running $hpcapdd_pid &> /dev/null ; then
+		log "hpcapdd did not start correctly"
+		exit 1
+	fi
+
+	log "Waiting for hpcapdd_spdk to intialize..."
+
+	sleep 60 # hpcapdd_spdk takes some time to start... this is the easy way to wait for it.
+
+	log "hpcapdd running. Starting benchmarks..."
+elif [ $enabled_hpcapdd = "true" ]; then
+	log "Starting hpcapdd in core $receiver_core with port $receiver_port"
+
+	taskset -c $receiver_core bin/release/hpcapdd $receiver_port 0 null >> $logfile 2>&1 &
+	hpcapdd_pid="$!"
+
+	if ! is_pid_running $hpcapdd_pid &> /dev/null ; then
+		log "hpcapdd did not start correctly"
+		exit 1
+	fi
+
+	log "hpcapdd running. Starting benchmarks..."
+else
+	log "Running benchmarks without hpcapdd"
+fi
+
+for framesize in $benchmark_framesizes; do
+	for rate_Mbps in $benchmark_rates_Mbps; do
+		base_losses=$(get_iface_losses $recv_iface)
+		base_rx=$(get_iface_rx_frames $recv_iface)
+		base_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+
+		log "Starting test for framesize ${framesize} at rate ${rate_Mbps}"
+
+		# These functions (start_generator, stop_generator, etc, are defined in hpcap-lib.bash)
+		start_generator $rate_Mbps $framesize $generator_out
+
+		log "Waiting for test to complete ($generation_duration_seconds seconds)..."
+
+		sleep $generation_duration_seconds
+
+		stop_generator
+
+		current_losses=$(get_iface_losses $recv_iface)
+		current_rx=$(get_iface_rx_frames $recv_iface)
+		current_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+
+		losses=$(bc <<< "$current_losses - $base_losses")
+		rx=$(bc <<< "$current_rx - $base_rx")
+		port_rxdrop=$(bc <<< "$current_port_rxdrop - $base_port_rxdrop")
+
+		if [ "$generator_mode" = "moongen" ]; then
+			# fixed-rate.lua outputs sent packets in the format
+			# 	END QN: Sent %d packets
+			# for each queue QN.
+			generated_frames=$(awk 'BEGIN { total = 0 } /END Q/ { total += $4 } END { print total }' $generator_out)
+			real_duration=$(awk '/Runtime/ { print $2 }' $generator_out)
+		elif [ "$generator_mode" =  "fpga" ]; then
+			readframes_cmd="cd $fpga_path; bin/readRegisters | grep '-Status: total packets' | awk '{print \$5}'"
+			generated_frames=$(ssh -t $generator_ssh_host "$readframes_cmd")
+			real_duration=$((generation_duration_seconds - 4)) # 4 seconds initialization. Estimation more or less.
+		elif [ "$generator_mode" = "hpcn_latency" ]; then
+			generated_frames=$(
+				grep "NIC TX port 0:" $generator_out | \
+				awk '{ if (NR > 1) print gensub(/\(([0-9]+).*/, "\\1", "g", $9) }' | \
+				awk 'BEGIN { total = 0 } { total += $1 } END { print total }'
+			)
+			real_duration=$(grep "NIC TX port 0:" $generator_out | awk 'BEGIN { total = 0 } { if (NR > 1) total += $20 } END { print total }')
+		fi
+
+		log "Generated ${generated_frames} duration ${real_duration}"
+
+		tot_frames=$(bc <<< "$rx + $losses")
+		disappeared_frames=$(bc <<< "$generated_frames - $rx - $losses")
+
+		if [ $disappeared_frames -lt 0 ]; then
+			perc_difference=$(bc <<< "scale = 3; 100 * $tot_frames / $generated_frames")
+			log "Negative disappeared frames: Reception statistic is $perc_difference % of generated frames."
+			rx=$(bc <<< "100 * $rx / $perc_difference")
+			losses=$(bc <<< "100 * $losses / $perc_difference")
+			disappeared_frames=0;
+		fi
+
+		actual_rate_Mbps=$(echo "scale = 3; (8 * $generated_frames * $framesize / $real_duration) / 1000000" | bc)
+		capture_pct=$(echo "scale = 2; 100 * $rx / $generated_frames" | bc)
+		loss_pct=$(echo "scale = 2; 100 * $losses / $generated_frames" | bc)
+		portdrop_loss_pct=$(echo "scale = 2; 100 * $port_rxdrop / $losses" | bc)
+		portdrop_pct=$(echo "scale = 2; 100 * $port_rxdrop / $generated_frames" | bc)
+
+		log "At $rate_Mbps Mbps, size $framesize, $capture_pct % captured."
+		log "RX frames: $rx. Lost frames: $losses. Generated frames: $generated_frames"
+		log "Lost $loss_pct % frames, of which $portdrop_loss_pct % were from port.rx_dropped ($portdrop_pct % of the total)"
+		log "Actual transmission rate: $actual_rate_Mbps Mbps"
+
+		if [ $disappeared_frames -ne 0 ]; then
+			log "Warning: $disappeared_frames frames were generated but not accounted for as lost or received."
+		fi
+
+		echo "$rate_Mbps $framesize $real_duration $actual_rate_Mbps $generated_frames $rx $losses $capture_pct $disappeared_frames $loss_pct $port_rxdrop $portdrop_pct" >> $resultfile
+	done
+done
+
+kill -TERM $hpcapdd_pid &> /dev/null
+
+log "Benchmark end. See $resultfile for results"
+log "Resultfile columns: 1-Rate 2-Framesize 3-Duration(seconds) 4-ActualTrafficRate 5-GeneratedFrames 6-ReceivedFrames 7-LostFrames 8-CapturePercentage 9-DisappearedFrames 10-LossPctg 11-Port_RxDropped 12-Port_RxDroppePctg"
+
+if which gnuplot &>/dev/null; then
+	graphout="benchmark-${date_ts}${filename_appendix}.png"
+	log "Generating result graph"
+	gnuplot -e "fin='$resultfile';fout='$graphout'" scripts/benchmark.gpi
+	log "Graph output in $graphout"
+fi

@@ -1,0 +1,32 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+drivname=$1
+
+echo "hpcap-modprobe-remove: Removing driver $drivname "
+
+export PATH=./:${PATH}:/sbin/
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+modprobe -r --ignore-remove $drivname || die "Cannot remove driver"
+
+hugetlb_filesystems=$(mount | grep "type hugetlbfs" | awk '{print $3}')
+
+echo "Hugetlbfs found: $hugetlb_filesystems"
+
+for htlbfs in $hugetlb_filesystems; do
+	for buffer in $(ls $htlbfs/hpcap*_buf 2>/dev/null); do
+		echo "Removing hugepage buffer $buffer"
+		rm $buffer
+	done
+done
+
+for node in $(ls /dev/hpcap_* 2>/dev/null); do
+	echo "Deleting driver node $node"
+	rm $node
+done

@@ -1,0 +1,9 @@
+{
+	"folders":
+	[
+		{
+			"follow_symlinks": true,
+			"path": ".",
+			"file_exclude_patterns": ["*.dpth", "*.md5", "*.auxlock", "*.nb", "*.acn", "*.acr", "*.alg", "*.aux", "*.bbl", "*.blg", "*.dvi", "*.fdb_latexmk", "*.fls", "*.glg", "*.glo", "*.gls", "*.idx", "*.ilg", "*.ind", "*.ist", "*.lof",  "*.lot", "*.maf", "*.mtc", "*.mtc0", "*.nav", "*.nlo", "*.out", "*.pdfsync", "*.ps", "*.snm", "*.synctex.gz", "*.toc", "*.vrb", "*.xdy", "*.tdo", "*.ithmc", "*.fuse*", "*.kate-swp", "*.backup", "*.pdf"] }
+	]
+}

@@ -1,0 +1,63 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./:${PATH}:/sbin/
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	echo "Launches the monitors for the HPCAP interfaces configured."
+	echo "Usage: launch-hpcap-monitors [vf]"
+	echo "If the vf option is present, the monitors will be adapted"
+	echo "to the virtual function driver."
+	exit 0
+fi
+
+vf="$1"
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./../params.cfg ]; then
+	paramfile=./../params.cfg
+	logdir=./../data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+monitor_core=$(read_value_param monitor_core)
+monitor_core=$(get_real_core_index $monitor_core)
+ifs=$(read_value_param ifs)
+
+echo "[ Launching monitoring scripts on core $monitor_core... ]"
+echo "Log location: $logdir"
+mkdir -p $logdir
+
+for iface in $ifs; do
+	iface_index=$(echo $iface | awk -v FS="hpcap|xgb" '{print $2}')
+	mode=$(read_value_param "mode${iface_index}")
+
+	if [ $mode -eq 2 ] || [ $mode -eq 3 ]; then
+		logtarget="${logdir}/${iface}-monitor.log"
+		pidfile="${logdir}/${iface}-monitor.pid"
+
+		if [ -e $pidfile ] && is_pid_running $(cat $pidfile) &> /dev/null; then
+			echo "Monitor for $iface already running with PID $(cat $pidfile)"
+		else
+			nohup taskset -c ${monitor_core} hpcap-monitor $iface $vf &> $logtarget &
+			monitor_pid=$!
+			echo "Monitor for $iface launched with PID $monitor_pid"
+			echo "$monitor_pid" > $pidfile
+		fi
+	fi
+done

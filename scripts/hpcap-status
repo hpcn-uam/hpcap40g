@@ -1,0 +1,281 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=${PATH}:/sbin:./scripts
+
+if [ "$1" = "-h" ]; then
+	echo "hpcap-status: Script for easy monitoring of the HPCAP driver status."
+	echo "usage: hpcap-status"
+	exit 0
+fi
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./../params.cfg ]; then
+	paramfile=./../params.cfg
+	logdir=./../data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+
+function refresh_ethtool()
+{
+	local interface=$1
+	ethtool_output=$(ethtool -S $interface 2>/dev/null)
+}
+
+function get_ethtool_param()
+{
+	local param=$1
+
+	# Returns 0 if the parameter name is not found.
+	echo "$ethtool_output" | (grep $param || echo "0 0") | head -n 1 | awk '{print $2}'
+}
+
+
+monitor_interval=$(read_value_param monitor_interval)
+ifs_all=$(read_value_param ifs)
+ifs=""
+initial_losses=""
+initial_rx=""
+initial_no_loss=""
+initial_client_loss=""
+initial_client_discard=""
+
+for iface in $ifs_all; do
+	if echo $iface | grep "hpcap" &> /dev/null; then
+		ifs="$ifs $iface"
+		initial_losses="$initial_losses $(get_ethtool_param $iface rx_dropped:)"
+		initial_rx="$initial_rx $(get_ethtool_param $iface rx_bytes:)"
+		initial_client_loss="$initial_client_loss $(get_ethtool_param $iface rx_hpcap_client_lost_frames:)"
+		initial_client_discard="$initial_client_discard $(get_ethtool_param $iface rx_hpcap_noclient_frames:)"
+
+		outdir=$logdir/$(date +%Y-%V)
+		outfile=$outdir/$iface
+
+		if [ -f $outfile ]; then
+			noloss_secs=$(awk 'BEGIN { t = 0 } $5 == 0 { t += 1 } $5 != 0 { t = 0} END { print t }' $outfile)
+			initial_no_loss="$initial_no_loss $noloss_secs"
+		else
+			initial_no_loss="$initial_no_loss 0"
+		fi
+	fi
+done
+
+
+( while [ 1 ]; do
+	outdir=$logdir/$(date +%Y-%V)
+	outfile=$outdir/$iface
+	echo "clear" # This tells the AWK script to clear the screen.
+
+	echo "- $(date)"
+	echo -n "- "; hp_info # Lines beginning with '-' are printed verbatim in the AWK script
+
+	if lsmod | grep "hpcap" &> /dev/null; then
+		echo "- HPCAP driver installed       "  # Extra spaces to overwrite with blanks.
+	else
+		echo "- HPCAP driver ${tbold}not${treset} installed"
+	fi
+
+
+	disabled_monitors=""
+
+	for iface in $ifs; do
+		if is_hpcap_iface "$iface" && (! is_monitor_running "$logdir" "$iface") ; then
+			disabled_monitors+="$iface "
+		fi
+	done
+
+	if [ ! -z "$disabled_monitors" ]; then
+		echoy "- Monitors not running on interfaces: $disabled_monitors"
+	fi
+
+	ifaceStats=""
+
+	for iface in $ifs; do
+		refresh_ethtool $iface
+		if has_link $iface; then
+			link="1"
+		else
+			link="0"
+		fi
+
+		rx_errors="$(get_ethtool_param rx_errors:)"
+		client_loss="$(get_ethtool_param rx_hpcap_client_lost_frames:)"
+		client_discard="$(get_ethtool_param rx_hpcap_noclient_frames:)"
+		ifaceStats="$ifaceStats $(tail -n 1 $outdir/$iface) $client_loss $client_discard $link $rx_errors"
+	done
+	echo $ifaceStats
+
+	sleep $monitor_interval
+done ) | gawk -vmonitor_interval=$monitor_interval -vifaceList="$ifs" \
+	 -vinitialLosses="$initial_losses" -vinitialRxBytes="$initial_rx" \
+	 -vinitialSecondsNoLoss="$initial_no_loss" -vinitialClientLoss="$initial_client_loss" \
+	 -vinitialClientDiscard="$initial_client_discard" '
+BEGIN {
+	ifaceCount = split(ifaceList,ifaces)
+	postfixCount = split("b Kb Mb Gb Tb Pb",sizePostfixes)
+
+	# Configure initial values with what the parent tells us
+	split(initialLosses, lossesList)
+	split(initialRxBytes, rxBytesList)
+	split(initialSecondsNoLoss, noLossList)
+	split(initialClientLoss, clientLossList)
+	split(initialClientDiscard, clientDiscardList)
+
+	for (i = 1; i <= ifaceCount; i++) {
+		iface = ifaces[i]
+		accRxBytes[iface] = rxBytesList[i]
+		accLostFrames[iface] = lossesList[i]
+		noLossSeconds[iface] = noLossList[i]
+		clientLoss[iface] = clientLossList[i]
+		clientDiscard[iface] = clientDiscardList[i]
+	}
+
+	if(!monitor_interval) monitor_interval = 1
+
+	system("clear")
+}
+
+function black(s) { return "\033[30m" s "\033[0m" }
+function red(s) { return "\033[31m" s "\033[0m" }
+function green(s) { return "\033[32m" s "\033[0m" }
+function yellow(s) { return "\033[33m" s "\033[0m" }
+function blue(s) { return "\033[34m" s "\033[0m" }
+
+function humanSize(size,	i) {
+	if (size < 1000) return size "b"
+
+	for (i = 1; i <= postfixCount && (size / (1000 ** i)) > 1000; i++) {}
+
+	return sprintf("%.2f%s", size / (1000 ** i), sizePostfixes[i + 1])
+}
+
+function humanTime(t) {
+	if (t < 60) return t "s"
+	t = t / 60
+
+	if (t < 60) return sprintf("%.1fm", t)
+	t = t / 60
+
+	if (t < 24) return sprintf("%.1fh", t)
+	t = t / 24
+
+	return sprintf("%.1fd", t)
+}
+
+function legend() {
+
+	print "\nInterface flags legend:"
+	print "· " green("L") ": Interface has an active link."
+	print "· " red("C") ": Losses due to clients being slow."
+	print "· " yellow("D") ": There are no clients connected to HPCAP, and the received frames are discarded"
+	print "· " red("E") ": Interface has rx_errors. Check ethtool."
+}
+
+/- / { print }
+/clear/ { printf "\033[0;0H" }
+
+! /- / && ! /clear/ {
+	printf "- RX Stats\n\n"
+	printf "%6s | %5s | %10s | %8s | %10s - %6s | %9s - %6s | Time w/o losses \n", "iface", "Flags", "RX Rate", "RX Tot.", "Losses", "%", "Loss Tot.", "%"
+	for (i = 0; i < ifaceCount; i++) {
+		iface = ifaces[i + 1]
+
+		i_rxBytes = 9 * i + 2
+		i_rxFrames = 9 * i + 3
+		i_lostFrames = 9 * i + 5
+		i_clientLoss = 9 * i + 6
+		i_clientDiscard = 9 * i + 7
+		i_link = 9 * i + 8
+		i_errors = 9 * i + 9
+
+		rxBytes = $i_rxBytes
+		rxFrames = $i_rxFrames
+		lostFrames = $i_lostFrames
+		clientLostFrames = $i_clientLoss
+		clientDiscardedFrames = $i_clientDiscard
+		hasLink = $i_link
+		errors = $i_errors
+
+		if (rxBytes < 0 || rxFrames < 0 || lostFrames < 0)
+			continue
+
+		accRxBytes[iface] += rxBytes
+		accLostFrames[iface] += lostFrames
+
+		rxSpeed = humanSize(8 * rxBytes / monitor_interval)
+		lossSpeed = lostFrames / monitor_interval
+		totalRx = humanSize(accRxBytes[iface])
+		totalLoss = accLostFrames[iface]
+		lossHuman = humanSize(lostFrames)
+		totalLossHuman = humanSize(totalLoss)
+		totFrames = rxFrames + lostFrames
+		totAccFrames = accRxBytes[iface] + accLostFrames[iface]
+
+		if (hasLink)
+			linkStr = green("L")
+		else
+			linkStr = black("L")
+
+		if (clientLostFrames > clientLoss[iface])
+			lossStr = red("C")
+		else
+			lossStr = black("C")
+
+		if (clientDiscardedFrames > clientDiscard[iface])
+			discardStr = yellow("D")
+		else
+			discardStr = black("D")
+
+		if (errors > 0)
+			errorStr = red("E")
+		else
+			errorStr = black("E")
+
+		clientLoss[iface] = clientLostFrames
+		clientDiscard[iface] = clientDiscardedFrames
+
+		flags = linkStr lossStr discardStr errorStr
+
+		if (lostFrames == 0)
+			noLossSeconds[iface] += 1
+		else
+			noLossSeconds[iface] = 0
+
+		noLossSecs_currIface = humanTime(noLossSeconds[iface])
+
+		if (totFrames == 0)
+			lossPctg = 0
+		else
+			lossPctg = 100 * lostFrames / totFrames
+
+		if (totAccFrames == 0)
+			lossAccPctg = 0
+		else
+			lossAccPctg = 100 * totalLoss / totAccFrames
+
+		sub(/b/, "B", totalRx)
+		sub(/b/, "", lossHuman)
+		sub(/b/, "", totalLossHuman)
+
+		printf "%6s |  %5s | %8sps | %8s | %7spps - %6.2f | %9s - %6.2f | %s    \n", iface, flags, rxSpeed, totalRx, lossHuman, lossPctg, totalLossHuman, lossAccPctg, noLossSecs_currIface
+
+	}
+	legend()
+}
+'

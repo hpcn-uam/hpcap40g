@@ -1,0 +1,322 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=./scripts:${PATH}:/sbin
+
+if [ "$1" = "-h" ]; then
+	echo "pending help"
+	exit 0
+elif [ "$1" = "--short" ]; then
+	shorttest=1
+else
+	shorttest=0
+fi
+
+# Load extra functions
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	die "hpcap-test can only run from the source folder."
+elif [ -e ./../params.cfg ]; then
+	paramfile=./params.cfg
+	logdir=./data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+### Some functions to help with the testing
+
+function testsuite_begin()
+{
+	echo "[>] Begin test at $(date +"%d-%m-%Y %H:%M:%S"). Logfile is $logfile"
+	log "Begin test at $(date +"%d-%m-%Y %H:%M:%S")"
+}
+
+function testsuite_end()
+{
+	echo "[<] End test at $(date +"%d-%m-%Y %H:%M:%S"). Logfile is $logfile"
+	log "End test at $(date +"%d-%m-%Y %H:%M:%S")"
+	exit 0
+}
+
+function log()
+{
+	echo "[$(date +"%d-%m-%Y %H:%M:%S.%N")] $@" >> $logfile
+}
+
+function begin_test()
+{
+	testname="$1"
+	echo -n "[>] Running $testname..."
+	log "Begin test $testname run."
+}
+
+function test_ok()
+{
+	echog "\r\033[K[v] Test $testname ok"
+	log "Successful test: $testname"
+}
+
+function test_fail()
+{
+	echor "\r\033[K[x] Test $testname failed        "
+	log "Failed test: $testname"
+}
+
+function die_test()
+{
+	echor "[x] Test abort."
+	log "Test suite dying."
+	exit 1
+}
+
+function test_command()
+{
+	local comm="${@:2}"
+	local testname="$1"
+
+	begin_test "$testname"
+
+	if $comm >> $logfile 2>&1 ; then
+		test_ok
+		return 0
+	else
+		test_fail
+		return 1
+	fi
+}
+
+function test_command_critical()
+{
+	local comm="${@:2}"
+	local testname="$1"
+
+	if ! test_command "$testname" "$comm" ; then
+		die_test
+	fi
+}
+
+function test_fail_die()
+{
+	test_fail
+	die_test
+}
+
+function install_hpcap()
+{
+	begin_test "HPCAP insmod"
+
+	log "Begin installation with install_hpcap.bash"
+	if ! sudo ./install_hpcap.bash >> $logfile 2>&1 ; then
+		test_fail_die
+	fi
+
+	log "Installation reports everything ok. Checking with lsmod"
+
+	if ! lsmod | grep hpcap >> $logfile 2>&1 ; then
+		log "HPCAP driver not installed"
+		test_fail_die
+	fi
+
+	test_ok
+}
+
+function reinstall_hpcap()
+{
+	if lsmod | grep hpcap &>/dev/null ; then
+		log "Removing HPCAP"
+		if ! sudo rmmod hpcap >> $logfile 2>&1 ; then
+			test_fail_die
+		fi
+	fi
+
+	if lsmod | grep hpcap >> $logfile 2>&1 ; then
+		log "HPCAP driver still installed"
+		test_fail_die
+	fi
+
+	log "Begin installation with install_hpcap.bash"
+	if ! sudo ./install_hpcap.bash >> $logfile 2>&1 ; then
+		test_fail_die
+	fi
+
+	log "Installation reports everything ok. Checking with lsmod"
+
+	if ! lsmod | grep hpcap >> $logfile 2>&1 ; then
+		log "HPCAP driver not installed"
+		test_fail_die
+	fi
+}
+
+function cleanup()
+{
+	for driver in $use_drivers ; do
+		rmmod $driver
+	done
+}
+
+function on_exit() # Called by trap
+{
+	is_pid_running $ssh_pid && kill -INT $ssh_pid &> /dev/null && wait $ssh_pid
+	is_pid_running $hpcapdd_pid && kill -INT $hpcapdd_pid &> /dev/null && wait $hpcapdd_pid
+	is_pid_running $hpcapdd_pid2 && kill -INT $hpcapdd_pid2 &> /dev/null && wait $hpcapdd_pid2
+}
+
+## Now get to the real testing.
+
+cd .. # We are in the scripts folder. Go back to the base source folder
+
+if ! source hpcap-test.cfg ; then
+	echor "hpcap-test.cfg configuration file not found."
+	exit 1
+fi
+
+logfile="/tmp/hpcap-test"
+
+> $logfile # Clear the logfile
+
+testsuite_begin
+
+available_drivers=$(make print-DRIV_TARGETS 2>/dev/null | cut -d'=' -f2)
+
+for driver in $available_drivers; do
+	test_command_critical "$driver compilation" "make $driver"
+	test_command "$driver modinfo" "modinfo bin/release/$driver.ko"
+done
+
+test_command "sample compilation" "make samples"
+test_command "lib compilation" "make libs"
+
+if [ $shorttest -ne 0 ] ; then
+	testsuite_end
+fi
+
+begin_test "automatic config generation"
+
+config_test_file="/tmp/hpcap-params.cfg"
+
+# The defaults (empty lines) should generate a valid file.
+(while true ; do
+	echo
+done; ) | scripts/gen-hpcap-config $config_test_file >> $logfile 2>&1
+
+log "Checking parameter file..."
+
+if ! is_paramfile_valid $config_test_file >> $logfile 2>&1 ; then
+	test_fail
+	die
+else
+	test_ok
+	rm $config_test_file
+fi
+
+if [ "$test_insmod" != "false" ]; then
+	install_hpcap
+fi
+
+begin_test "HPCAP interface creation"
+
+ifs=$(read_value_param ifs)
+
+for iface in $ifs; do
+	log "Checking interface $iface"
+
+	if ! ethtool $iface >> $logfile 2>&1 ; then
+		log "Fail on interface $iface creation"
+		test_fail_die
+	fi
+done
+
+test_ok
+
+begin_test "HPCAP listener status"
+status_ok="true"
+
+for iface in $ifs; do
+	if [[ $iface = hpcap* ]]; then
+		log "Checking listener status on interface $iface"
+		iface_idx=$(echo $iface | sed 's/hpcap//g')
+
+		status_file="/tmp/hpcap-statusinfo.out"
+
+		if ! bin/release/statusinfo $iface_idx 0 > $status_file ; then
+			log "statusinfo command failed on $iface"
+			cat $status_file >> $logfile
+			status_ok="false"
+			break
+		fi
+
+		log "Status output for $iface"
+		cat $status_file >> $logfile
+
+		filesize_counter=$(awk '/filesize/ { print $4 }' $status_file)
+		global_read=$(awk '/Global Listener/ { print $8 }' $status_file | tr -d '.')
+		global_write=$(awk '/Global Listener/ { print $11 }' $status_file | tr -d '.')
+		listeners=$(awk '/active listeners/ { print $1 }' $status_file)
+		thread_state=$(awk '/Reception thread/ { print $4 }' $status_file)
+
+		if [ $filesize_counter -ne 0 ]; then
+			log "$iface: Buffer filesize counter ($filesize_counter) is not zero. This causes unaligned memory accesses."
+			status_ok="false"
+		fi
+
+		if [ $global_read -ne 0 ] || [ $global_write -ne 0 ]; then
+			log "$iface: Bad read/write offsets ($global_read/$global_write)"
+			status_ok="false"
+		fi
+
+		if [ $listeners -ne 1 ]; then
+			log "$iface: Expected only 1 listener present (statusinfo program), there are $listeners"
+			status_ok="false"
+		fi
+
+		if [ $thread_state -ne 0 ]; then
+			log "$iface: RX thread not runnable (state $thread_state)"
+			status_ok="false"
+		fi
+
+		rm $status_file
+	fi
+done
+
+if [ "$status_ok" = "true" ]; then
+	test_ok
+else
+	test_fail
+fi
+
+if [ "$test_rmmod" = "true" ]; then
+	begin_test "HPCAP rmmod"
+
+	if ! sudo rmmod hpcap >> $logfile 2>&1 ; then
+		test_fail_die
+	fi
+
+	if lsmod | grep hpcap >> $logfile 2>&1 ; then
+		log "HPCAP driver still installed"
+		test_fail_die
+	fi
+
+	test_ok
+fi
+
+for test in $(ls scripts/tests/*); do
+	test_enabled_var=test_$(basename $test)
+	test_enabled=${!test_enabled_var}
+
+	if [ "$test_enabled" = "true" ]; then
+		source $test
+	fi
+done
+
+testsuite_end

@@ -1,0 +1,18 @@
+#!/bin/bash
+
+branch=$(git rev-parse --symbolic-full-name --abbrev-ref HEAD)
+base=$(dirname $branch)
+release=$(basename $branch)
+
+if [ $base != "release" ] && [ $base != "hotfix" ]; then
+	echo "Only to be run on release/* or hotfix/* branches."
+	exit 1
+fi
+
+echo "Version is $release"
+
+echo "Updating Doxyfile..."
+sed -i '' -E "s/PROJECT_NUMBER[[:blank:]]+=.*\$/PROJECT_NUMBER = \"$release\";/" Doxyfile
+
+
+

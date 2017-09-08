@@ -1,0 +1,162 @@
+#!/bin/bash
+
+cd "$(dirname ${BASH_SOURCE[0]})"
+
+export PATH=${PATH}:/sbin:./scripts
+
+if ! source hpcap-lib.bash; then
+	echo "Shell library (hpcap-lib.bash) not found in your \$PATH nor in the scripts directory"
+	echo "Your HPCAP installation is probably corrupted."
+	exit 1
+fi
+
+# There are two options for the parameters file: if we're running this script from
+# the scripts folder in the source code tree, it's in the parent directory.
+# The other option is that the script is running from prefix/usr/bin so the
+# parameters file is placed in prefix/etc/hpcap/params.cfg.
+
+if [ -e ./../../etc/hpcap/params.cfg ]; then
+	paramfile=./../../etc/hpcap/params.cfg
+	logdir=$(read_value_param monitor_basedir)
+elif [ -e ./../params.cfg ]; then
+	paramfile=./../params.cfg
+	logdir=./../data
+else
+	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
+fi
+
+
+ethtool_output=""
+
+function refresh_ethtool()
+{
+	local interface=$1
+	ethtool_output=$(ethtool -S $interface)
+}
+
+function get_param()
+{
+	local param=$1
+
+	# Returns 0 if the parameter name is not found.
+	echo "$ethtool_output" | (grep $param || echo "0 0") | head -n 1 | awk '{print $2}'
+}
+
+function refresh_iface_stats()
+{
+	refresh_ethtool $1
+	current_rx_frames=$(get_param rx_packets:)
+	current_rx_bytes=$(get_param rx_bytes:)
+
+	if [ $vf -eq 0 ]; then
+		missed=$(get_param rx_missed_errors:)
+		dropped=$(get_param rx_dropped:)
+		dropped_port=$(get_param port.rx_dropped:)
+		current_rx_missed_frames=$((missed + dropped + dropped_port))
+	else
+		current_rx_missed_frames=-1
+	fi
+}
+
+function get_interval_stats()
+{
+	interval=$(bc <<< "scale=4; $current_timestamp - $last_timestamp" )
+
+	interval_rx_bytes=$(bc <<< "scale=0; ( $current_rx_bytes - $last_rx_bytes ) / $interval")
+	interval_rx_frames=$(bc <<< "scale=0; ( $current_rx_frames - $last_rx_frames ) / $interval")
+	interval_rx_missed_frames=$(bc <<< "scale=0; ( $current_rx_missed_frames - $last_rx_missed_frames ) / $interval")
+
+	# Estimate missed bytes.
+	if [ $interval_rx_frames -ne 0 ]; then
+		local avg_frame_size=$(bc <<< "scale=0; $interval_rx_bytes / $interval_rx_frames")
+		interval_rx_missed_bytes=$(bc <<< "scale=0; $interval_rx_missed_frames * $avg_frame_size")
+	else
+		interval_rx_missed_bytes=0
+	fi
+
+
+	last_rx_bytes=$current_rx_bytes
+	last_rx_frames=$current_rx_frames
+	last_rx_missed_frames=$current_rx_missed_frames
+	last_timestamp=$current_timestamp
+}
+
+function write_interval_stats()
+{
+	output=$1
+
+	echo $(bc <<< "scale=0; $current_timestamp / 1") $interval_rx_bytes $interval_rx_frames \
+		$interval_rx_missed_bytes $interval_rx_missed_frames >> $output
+}
+
+function usage()
+{
+	echo "Monitor the bytes and frames received and lost for a given interface."
+	echo "Usage: hpcap-monitor <iface> [vf]"
+	echo "If the vf option is present, the monitor will be adapted"
+	echo "to the virtual function driver."
+}
+
+function on_exit()
+{
+	pidfile="${logdir}/${iface}-monitor.pid"
+
+	[ -e $pidfile ] && rm $pidfile
+
+	echo "Monitor for interface $iface exiting."
+	exit 0
+}
+
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+	usage
+	exit 0
+fi
+
+if [ $# -lt 1 ]; then
+	echo "Unrecognized arguments '$@'"
+	usage
+	exit 1
+fi
+
+monitor_interval=$(read_value_param monitor_interval)
+iface=$1
+
+if [ "$2" = "vf" ]; then
+	vf=1
+else
+	vf=0
+fi
+
+trap on_exit SIGINT SIGTERM
+
+last_rx_bytes=0
+last_rx_missed_bytes=0
+last_rx_frames=0
+last_rx_missed_frames=0
+last_timestamp=$(date +%s.%N)
+
+refresh_iface_stats $iface
+get_interval_stats
+
+next_wakeup_timestamp=$(($(date +%s) + $monitor_interval))
+
+echo "Monitor on interface $iface ready. Output directory: $logdir"
+
+while [ 1 ]; do
+	while [ $(date +%s) -lt $next_wakeup_timestamp ]; do
+		sleep 0.05
+	done
+
+	next_wakeup_timestamp=$(($(date +%s) + $monitor_interval))
+	current_timestamp=$(date +%s.%N)
+
+	refresh_iface_stats $iface
+	get_interval_stats
+
+	outdir=$logdir/$(date +%Y-%V)
+	outfile=$outdir/$iface
+
+	mkdir -p $outdir
+
+	write_interval_stats $outfile
+done

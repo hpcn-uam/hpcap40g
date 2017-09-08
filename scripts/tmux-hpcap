@@ -1,0 +1,25 @@
+#!/bin/bash
+# Creates a tmux session with a nice layout for HPCAP testing
+# The shell argument, if existent, defines the directoryt in which HPCAP is placed. If not present, defaults  to HPCAP
+
+if [ -z "$1" ]; then
+	hpcap_dir="HPCAP"
+else
+	hpcap_dir="$1"
+fi
+
+tmux new \; \
+ split-window -h \; \
+ split-window -v \; \
+ send-keys "dmesg -wH" C-m \; \
+ select-pane -t 1 \; \
+ send-keys htop C-m \; \
+ select-pane -t 0 \; \
+ send-keys "cd $hpcap_dir" C-m \; \
+ split-window -v\; \
+ send-keys "cd $hpcap_dir" C-m \; \
+ select-pane -t 0\; \
+ resize-pane -t 0 -y 15\; \
+ send-keys scripts/hpcap-status C-m \; \
+ select-pane -t 1 \; \
+ split-window -v
