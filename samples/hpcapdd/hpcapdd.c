@@ -119,8 +119,6 @@ int main(int argc, char **argv)
 
 		written = 0;
 
-		printdbg("Ack ready\n");
-
 		while ((!stop) && (written < HPCAP_FILESIZE)) {
 			/* acumular para escribir un bloque */
 			hpcap_ack_wait_timeout(&hp, HPCAP_BS, 1000000000/*1 sec*/);
@@ -146,7 +144,7 @@ int main(int argc, char **argv)
 		// Pending:
 		if (stop) {
 			hpcap_ack_wait_timeout(&hp, 1, 1); // Retrieve all available data
-			printf("Writing final block size %zu\n", hp.avail);
+			printf("Writing final block size %lu\n", hp.avail);
 
 			if (hp.avail > 0) {
 				wrret = hpcap_write_block(&hp, fd, HPCAP_FILESIZE - written);
@@ -173,7 +171,7 @@ int main(int argc, char **argv)
 		wrtime = endwr.tv_sec - initwr.tv_sec;
 		wrtime += (endwr.tv_usec - initwr.tv_usec) * 1e-6;
 
-		printdbg("Transfer time: %lf s (%d transfers)\n", wrtime, transfer_count);
+		printdbg("Transfer time: %lf s (%lu transfers)\n", wrtime, transfer_count);
 		printdbg("%.1lf MBytes transfered => %.3lf Mbps\n",
 				 (transfer_count * (double)HPCAP_BS) / MEGA, 7 * transfer_count * ((double) HPCAP_BS) / (MEGA * wrtime));
 #endif

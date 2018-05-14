@@ -51,12 +51,15 @@ int main(int argc, char *argv[])
 	printf("Global Listener %d: Kill %d. Read Offset: %ld. Write Offset: %ld\n",
 		   info.global_listener.id, info.global_listener.kill, info.global_listener.bufferRdOffset, info.global_listener.bufferWrOffset);
 
+	printf("Buffer occupation rate: %.2f %%\n", 100 * hpcap_ioc_listener_occupation(&info.global_listener));
+
 	//Other listeners
 	printf("%d active listeners\n", info.num_listeners);
 
 	for (i = 0; i < info.num_listeners; i++) {
-		printf("Listener %d: Kill %d. Read Offset: %ld. Write Offset: %ld\n",
-			   info.listeners[i].id, info.listeners[i].kill, info.listeners[i].bufferRdOffset, info.listeners[i].bufferWrOffset);
+		printf("Listener %d: Kill %d. Read Offset: %ld. Write Offset: %ld. Occupation rate: %.2f %%\n",
+			   info.listeners[i].id, info.listeners[i].kill, info.listeners[i].bufferRdOffset, info.listeners[i].bufferWrOffset,
+			   100 * hpcap_ioc_listener_occupation(&info.listeners[i]));
 	}
 
 	if (info.thread_state == -1)

@@ -28,7 +28,6 @@ int main(int argc, char **argv)
 	uint64_t epoch = 0;
 	uint16_t len, caplen;
 	int i = 0, j = 0, ret = 0;
-	char filename[100];
 
 	if (argc != 3) {
 		printf("Uso: %s <fichero_RAW_de_entrada> <fichero_PCAP_de_salida>\n", argv[0]);
@@ -72,8 +71,11 @@ int main(int argc, char **argv)
 		}
 
 		if ((secs == 0) && (nsecs == 0)) {
-			fread(&caplen, 1, sizeof(uint16_t), fraw);
-			fread(&len, 1, sizeof(uint16_t), fraw);
+			if (fread(&caplen, 1, sizeof(uint16_t), fraw) != sizeof(uint16_t))
+				fprintf(stderr, "Failure reading caplen\n");
+
+			if (fread(&len, 1, sizeof(uint16_t), fraw) != sizeof(uint16_t))
+				fprintf(stderr, "Failure reading len\n");
 
 			if (len != caplen)
 				printf("Wrong padding format [len=%d,caplen=%d]\n", len, caplen);

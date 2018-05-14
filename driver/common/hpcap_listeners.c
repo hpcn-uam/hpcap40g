@@ -39,6 +39,7 @@ void hpcap_init_listeners(struct hpcap_buffer_listeners* lstnr, size_t bufsize)
 	spin_lock_init(&lstnr->lock);
 	atomic_set(&lstnr->listeners_count, 0);
 	atomic_set(&lstnr->already_popped, 0);
+	atomic_set(&lstnr->force_killed_listeners, 0);
 
 	hpcap_rst_listener(&lstnr->global);
 
@@ -62,8 +63,9 @@ void hpcap_push_listener(struct hpcap_buffer_listeners* lstnr, int index, u64 co
 		return;
 	}
 
-	if (count > 0 && avail_bytes(list) <= count) {
-		BPRINTK(ERR, "[PUSH] Error => RD:%zu WR:%zu avail:%zu count:%llu\n", list->bufferRdOffset, list->bufferWrOffset, avail_bytes(list), count);
+	if (avail_bytes(list) < count) {
+		BPRINTK(ERR, "Erroneous push_listener: wants to push %llu bytes but only %zu bytes available to read. RD: %zu WR: %zu\n",
+				count, avail_bytes(list), list->bufferRdOffset, list->bufferWrOffset);
 		count = avail_bytes(list) - 1;
 	}
 
@@ -301,4 +303,46 @@ void hpcap_global_listener_reset_offset(struct hpcap_buffer_listeners* lstnr)
 	lstnr->global.bufferWrOffset = 0;
 	lstnr->global.bufferRdOffset = 0;
 	atomic_set(&lstnr->already_popped, 0);
+}
+
+int hpcap_kill_listener(struct hpcap_buffer_listeners* lstnr, int id)
+{
+	size_t force_killed_listeners;
+	struct hpcap_listener* l = hpcap_get_listener(lstnr, id);
+
+	if (l == NULL)
+		return -EIDRM;
+
+	atomic_set(&l->kill, 1);
+	schedule_timeout(ns(SLEEP_QUANT * 10)); // Allow time for any locked thread to get out.
+
+	filp_close(l->filp, NULL);
+
+	// No synchronization for the increment as we suppose that no one is going to do
+	// two simultaneous calls to this function.
+	force_killed_listeners = atomic_read(&lstnr->force_killed_listeners);
+
+	if (force_killed_listeners < MAX_FORCE_KILLED_LISTENERS) {
+		lstnr->force_killed_listener_ids[force_killed_listeners] = id;
+		atomic_set(&lstnr->force_killed_listeners, force_killed_listeners + 1);
+	}
+
+	schedule_timeout(ns(SLEEP_QUANT * 10)); // Again, leave some time for threads to get out...
+	hpcap_del_listener(lstnr, id);
+
+	BPRINTK(WARNING, "Successfully killed listener with id %d\n", id);
+
+	return 0;
+}
+
+int hpcap_is_listener_force_killed(struct hpcap_buffer_listeners* lstnr, int id)
+{
+	size_t i, force_killed = atomic_read(&lstnr->force_killed_listeners);
+
+	for (i = 0; i < force_killed; i++) {
+		if (id == lstnr->force_killed_listener_ids[i])
+			return 1;
+	}
+
+	return 0;
 }

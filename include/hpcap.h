@@ -15,7 +15,7 @@
 
 #include <asm/ioctl.h>
 
-#define HPCAP_MAJOR 1010 //
+#define HPCAP_MAJOR 345 //
 #define HPCAP_NAME "hpcap"
 
 #define MAX_BUFS 16
@@ -120,9 +120,9 @@ static inline void prefetchnta(void *p)
 ************************************************/
 //#define DO_BUF_ALLOC
 #ifdef DO_BUF_ALLOC
-#define HPCAP_BUF_SIZE (4ul*1024ul*1024ul)
+#define HPCAP_BUF_SIZE (2ul*1024ul*1024ul)
 #else
-#define HPCAP_BUF_SIZE ( 4ul*1024ul*1024ul )
+#define HPCAP_BUF_SIZE ( 1024ul*1024ul )
 #define HPCAP_BUF_DSIZE (4ul*1024ul*1024ul)
 #endif
 
@@ -147,7 +147,7 @@ static inline void prefetchnta(void *p)
 * REMOVE_DUPS
 *  uncomment this define to enable the duplicate detection
 ************************************************/
-//#define REMOVE_DUPS
+// #define REMOVE_DUPS
 #ifdef REMOVE_DUPS
 #define DUP_CHECK_LEN 70
 #define SCL "70"
@@ -163,6 +163,16 @@ struct hpcap_dup_info {
 	u16 len;
 	u8 data[DUP_CHECK_LEN];
 };
+#endif
+
+/************************************************
+* HPCAP_SYSFS
+*  comment/uncomment this define to enable/disable attribute hot-swapping
+************************************************/
+#define HPCAP_SYSFS
+#ifdef HPCAP_SYSFS
+#define HOT_DUPS 0		// position in device array for attributes
+#define HOT_CAPLEN 1
 #endif
 
 #define HPCAP_DEFAULT_MODE 1
@@ -195,6 +205,7 @@ struct hpcap_dup_info {
 #define HPCAP_IOC_HUGE_UNMAP _IO(HPCAP_IOC_MAGIC, 9)
 #define HPCAP_IOC_STATUS_INFO _IOR(HPCAP_IOC_MAGIC, 10, struct hpcap_ioc_status_info*)
 #define HPCAP_IOC_BUFCHECK _IO(HPCAP_IOC_MAGIC, 11)
+#define HPCAP_IOC_KILL_LST _IOR(HPCAP_IOC_MAGIC, 12, int)
 #define MAX_HUGETLB_FILE_LEN 256
 #define MAX_PCI_BUS_NAME_LEN 20
 #define MAX_NETDEV_NAME 10
@@ -241,6 +252,7 @@ struct hpcap_ioc_status_info_listener {
 	int kill;		/**< Used for signaling stop requests. */
 	u64 bufferWrOffset; /**< Offset of the last write in the HPCAP buffer. */
 	u64 bufferRdOffset; /**< Offset of the last read from the client in the buffer */
+	size_t buffer_size; /**< Size of the buffer. */
 };
 
 struct hpcap_ioc_status_info {
@@ -323,12 +335,12 @@ struct hpcap_handle {
 };
 
 #ifdef DEBUG
-#define printdbg(fmt, ...) fprintf(stderr, "(D) %s: " fmt , __FUNCTION__ , ## __VA_ARGS__)
+#define printdbg(fmt, ...) fprintf(stderr, "(D) %s: " fmt , __func__ , ## __VA_ARGS__)
 #else
 #define printdbg(fmt, ...) do {} while (0)
 #endif
 
-#define printerr(fmt, ...) fprintf(stderr, "%s: " fmt , __FUNCTION__ , ## __VA_ARGS__)
+#define printerr(fmt, ...) fprintf(stderr, "%s: " fmt , __func__ , ## __VA_ARGS__)
 
 /**
  * Open a handle for a HPCAP adapter in the given queue.
@@ -421,6 +433,22 @@ int hpcap_rdoff(struct hpcap_handle *handle);
  * @return        HPCAP_OK/HPCAP_ERR.
  */
 int hpcap_ioc_killwait(struct hpcap_handle *handle);
+
+/**
+ * Kill the listener with the given ID and close the corresponding file.
+ * @param  handle      Handle to the file.
+ * @param  listener_id ID of the listener.
+ * @return             0 if OK, negative if error.
+ */
+int hpcap_ioc_kill(struct hpcap_handle* handle, int listener_id);
+
+/**
+ * Retrieve information of the HPCAP buffer
+ * @param  handle HPCAP handle
+ * @param  info   Information structure to be filled
+ * @return        HPCAP_OK/HPCAP_ERR
+ */
+int hpcap_status_info(struct hpcap_handle* handle, struct hpcap_ioc_status_info* info);
 
 #ifdef REMOVE_DUPS
 /**
@@ -543,6 +571,24 @@ short hpcap_is_header_padding(struct raw_header* header);
  * @return          1 if a frame was read, 0 if there was not enough available bytes.
  */
 short _hpcap_read_next(struct hpcap_handle* handle, struct raw_header** rawh, uint8_t** frame, uint8_t* for_copy);
+
+/**
+ * Return the available bytes to read for the given listener.
+ * @param  l Listener structure pointer
+ * @return   Available bytes to read.
+ */
+size_t hpcap_ioc_listener_info_available_bytes(struct hpcap_ioc_status_info_listener* l);
+
+
+/**
+ * Return the occupation rate for the given listener, defined as the percentage
+ * of the buffer that the listener hasn't read.
+ *
+ * @param 	l 	Listener structure pointer.
+ * @return 		Occupation rate
+ */
+double hpcap_ioc_listener_occupation(struct hpcap_ioc_status_info_listener* l);
+
 /** @} */
 
 #endif /* !__KERNEL__ */

@@ -9,6 +9,7 @@
 #include "hpcap_rx.h"
 #include "hpcap_dups.h"
 #include "hpcap_vma.h"
+#include "hpcap_sysfs.h"
 
 /* Las siguientes dos variables se rellenan en ixgbe[vf]_probe() */
 int adapters_found = 0;
@@ -135,6 +136,11 @@ int hpcap_register_adapters()
 			}
 
 			offset += adapter_bufsize;
+
+#ifdef HPCAP_SYSFS
+			hpcap_sysfs_init(adapter);
+#endif /* HPCAP_SYSFS */
+
 		}
 	}
 

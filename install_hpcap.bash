@@ -17,8 +17,6 @@ if ! is_paramfile_valid $paramfile ; then
 	exit 1
 fi
 
-vf=$(read_value_param use_vf)
-
 #######################
 # CLEANING
 #######################
@@ -35,32 +33,54 @@ echo "[ Removing modules ... ]"
 
 modules_to_remove_ixgbe="ps_ixgbe ixgbe hpcap ixgbevf hpcap ixgbevf hpcapvf igb_uio"
 modules_to_remove_mlnx="mlx4_en mlx4_ib mlx4_core mlx5_ib mlx5_core ib_ipoib ib_ucm ib_cm ib_umad ib_uverbs ib_sa ib_mad iw_cm ib_core ib_addr hpcapmlx"
-modules_to_remove_i40e="i40e hpcapi"
+modules_to_remove_i40e="i40e hpcapi i40evf hpcapivf"
+modules_to_remove_i40evf="hpcapi i40evf hpcapivf"
 
 
 #######################
 # INSTALLING
 #######################
 
-if [ -z "$1" ]; then
-	if [ $vf -eq 0 ]
-	then
-		kofile="bin/release/hpcap.ko"
-	else
-		kofile="bin/release/hpcapvf.ko"
-	fi
-elif [ "$1" == "mlnx" ]; then
-	kofile="bin/release/hpcapmlx.ko"
+if [ "$1" == "-d" ]; then
+	echo "     -> Enabling debug modules"
+	debug=1
+	shift
 else
-	kofile=$1
+	debug=0
 fi
 
-driver_type="$(get_driver_type $kofile)"
+
+if [ -z "$1" ]; then
+	driver_type=$(read_value_param driver_type)
+	kofile=""
+
+	if [ ! -z "$driver_type" ]; then
+		module=$(get_module_for_driver_type $driver_type)
+
+		if [ ! -z "$module" ]; then
+			kofile="bin/release/$module"
+		fi
+	fi
+
+	if [ -z "$kofile" ]; then
+		kofile=bin/release/hpcap.ko
+		driver_type=ixgbe
+	fi
+else
+	kofile=$1
+	driver_type="$(get_driver_type $kofile)"
+fi
+
+if [ $debug -eq 1 ]; then
+	kofile=$(echo $kofile | sed 's/release/debug/g')
+fi
 
 if [ "$driver_type" = "mlnx" ]; then
 	modules_to_remove="$modules_to_remove_mlnx"
 elif [ "$driver_type" = "i40e" ]; then
 	modules_to_remove="$modules_to_remove_i40e"
+elif [ "$driver_type" = "i40evf" ]; then
+	modules_to_remove="$modules_to_remove_i40evf"
 else
 	modules_to_remove="$modules_to_remove_ixgbe"
 fi
@@ -143,14 +163,8 @@ make libs
 
 monitor_enabled=$(read_value_param monitor_enabled)
 
-if [ $vf -eq 1 ]; then
-	vfarg="vf"
-else
-	vfarg=""
-fi
-
 if [ "$monitor_enabled" = "1" ]; then
-	launch-hpcap-monitors $vfarg
+	launch-hpcap-monitors
 fi
 
 if [ $ret -ne 0 ]; then

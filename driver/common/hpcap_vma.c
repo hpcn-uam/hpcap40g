@@ -148,11 +148,10 @@ int hpcap_buffer_check(struct hpcap_buf* bufp)
 {
 	void* addr = bufp->bufferCopia;
 	size_t block_size = PAGE_SIZE;
-	size_t total_blocks = bufp->bufSize / block_size;
 	size_t offset;
 
-	bufp_dbg(DBG_MEM, "Buffer writability check. Start at %p, size %llu. Block size is %zu, total blocks to write %zu\n",
-			 addr, bufp->bufSize, block_size, total_blocks);
+	bufp_dbg(DBG_MEM, "Buffer writability check. Start at %p, size %llu. Block size is %zu, total blocks to write %llu\n",
+			 addr, bufp->bufSize, block_size, bufp->bufSize / block_size);
 
 	for (offset = 0; offset < bufp->bufSize; offset += block_size) {
 		memset(addr + offset, 1, block_size);

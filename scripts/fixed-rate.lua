@@ -2,10 +2,11 @@
 -- frame size.
 -- Usage: Moongen fixed-rate.lua port rate(Gbps) framesize
 
-local dpdk	= require "dpdk"
+local dpdk		= require "dpdk"
 local memory	= require "memory"
 local device	= require "device"
-local dpdkc	= require "dpdkc"
+local dpdkc		= require "dpdkc"
+local moongen 	= require "moongen"
 
 local ffi	= require "ffi"
 
@@ -31,14 +32,14 @@ function master(txPort, rate, size)
 		queue:setRate(ratePerQueue)
 
 		-- Launch sender threads
-		dpdk.launchLua("loadSlave", txPort, q - 1, size)
+		dpdk.launchLuaOnCore(10 + q - 1, "loadSlave", txPort, q - 1, size)
 	end
 
-	local tstart = dpdk.getTime()
-	dpdk.waitForSlaves()
-	local tend = dpdk.getTime()
+	local timeStart = moongen.getTime()
+	moongen.waitForTasks()
+	local timeEnd = moongen.getTime()
 
-	printf("Runtime %d seconds\n", tend - tstart);
+	printf("Runtime %f", timeEnd - timeStart)
 end
 
 function loadSlave(port, queue, size)
@@ -46,32 +47,25 @@ function loadSlave(port, queue, size)
 	local queue = device.get(port):getTxQueue(queue)
 
 	-- Allocate a memory pool for the buffers
-	local mem = memory.createMemPool(function(buf)
-		local data = ffi.cast("uint8_t*", buf.pkt.data)
-		-- src/dst mac
-		for i = 0, 11 do
-			data[i] = 0xCA
-		end
-		-- eth type
-		data[12] = 0x12
-		data[13] = 0x34
+	local mem = memory.createMemPool{n = 8191, func = function(buf)
+		buf:getEthernetPacket():fill{
+			pktLength = size,
+			ethSrc = queue,
+			ethDst = "10:11:12:13:14:15",
+		}
+	end}
 
-		for i = 14,(size - 1) do
-			data[i] = 0xDE
-		end
-	end)
-
-	local lastPrint = dpdk.getTime()
+	local lastPrint = moongen.getTime()
 	local totalSent = 0
 	local lastTotal = 0
 	local lastSent = 0
 	local bufs = mem:bufArray()
 	local seq = 0
 
-	while dpdk.running() do
+	while moongen.running() do
 		bufs:alloc(size)
 		totalSent = totalSent + queue:send(bufs)
-		local time = dpdk.getTime()
+		local time = moongen.getTime()
 
 		if time - lastPrint > 1 then -- Update queue status each second
 			local mpps = (totalSent - lastTotal) / (time - lastPrint) / 10^6

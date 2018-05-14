@@ -17,7 +17,7 @@
 //#define DEBUG
 //#define DEBUG2
 #define NSECS_PER_SEC (1000000000)
-#define DUMP_PCAP
+
 
 
 int main(int argc, char **argv)
@@ -30,7 +30,7 @@ int main(int argc, char **argv)
 	uint32_t secs, nsecs;
 	uint16_t len;
 	uint16_t caplen;
-	int i = 0, j = 0, k = 0, ret = 0;
+	int i = 0, j = 0, ret = 0;
 	char filename[100];
 	uint64_t filesize = 0;
 
@@ -46,18 +46,15 @@ int main(int argc, char **argv)
 		exit(-1);
 	}
 
-	//abrir fichero de salida
-#ifdef DUMP_PCAP
+	// Abrir fichero de salida
 	sprintf(filename, "%s_%d.pcap", argv[2], j);
 	pcap_open = pcap_open_dead(DLT_EN10MB, CAPLEN);
 	pcapture = pcap_dump_open(pcap_open, filename);
 
 	if (!pcapture) {
-		perror("Error in pcap_dump_open");
+		perror("pcap_dump_open");
 		exit(-1);
 	}
-
-#endif
 
 	while (1) {
 #ifdef PKT_LIMIT
@@ -79,13 +76,16 @@ int main(int argc, char **argv)
 
 			if (nsecs >= NSECS_PER_SEC) {
 				printf("Wrong NS value (file=%d,pkt=%d)\n", j, i);
-				printf("[%09ld.%09ld] %u bytes (cap %d), %lu, %d,%d\n", secs, nsecs, len, caplen, filesize, j, i);
+				printf("[%09u.%09u] %u bytes (cap %d), %lu, %d,%d\n", secs, nsecs, len, caplen, filesize, j, i);
 				//break;
 			}
 
 			if ((secs == 0) && (nsecs == 0)) {
-				fread(&caplen, 1, sizeof(uint16_t), fraw);
-				fread(&len, 1, sizeof(uint16_t), fraw);
+				if (fread(&caplen, 1, sizeof(uint16_t), fraw) != sizeof(uint16_t))
+					fprintf(stderr, "Failure reading caplen\n");
+
+				if (fread(&len, 1, sizeof(uint16_t), fraw) != sizeof(uint16_t))
+					fprintf(stderr, "Failure reading len\n");
 
 				if (len != caplen)
 					printf("Wrong padding format [len=%d,caplen=%d]\n", len, caplen);
@@ -112,7 +112,7 @@ int main(int argc, char **argv)
 			h.len = len;
 
 #ifdef DEBUG
-			printf("[%09ld.%09ld] %u bytes (cap %d), %lu, %d,%d\n", secs, nsecs, len, caplen, filesize, j, i);
+			printf("[%09u.%09u] %u bytes (cap %d), %lu, %d,%d\n", secs, nsecs, len, caplen, filesize, j, i);
 #endif
 
 			if (caplen > MAX_PACKET_LEN)

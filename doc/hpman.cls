@@ -169,3 +169,20 @@
 \setcounter{secnumdepth}{3}
 
 \pagestyle{headings}
+
+% For input of gnuplot files. Automatically resizes the image based on linewidth.
+% Note: use latexmk to compile so it detects the dependency with .gp wiles.
+\newcommand{\inputgnuplot}[2][1]{
+	\vspace{-2ex}
+	\resizebox{#1\linewidth}{!}{
+		\IfFileExists{#2.tex}{
+			\fontsize{7pt}{7pt}\fontfamily{ppl}\selectfont
+			\input{#2.tex}
+			\vspace{-15pt} % Adjust for font size
+		}{
+			\PackageWarning{hpman}{File `#2.tex' not found.}
+			\fbox{Gnuplot not found.\begin{minipage}{4.7in}\hfill\vspace{3in}\end{minipage}}
+		}
+	}
+	\vspace{-3ex}
+}

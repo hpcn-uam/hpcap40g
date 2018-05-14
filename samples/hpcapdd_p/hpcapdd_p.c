@@ -121,7 +121,7 @@ int main(int argc, char **argv)
 					if (fd)
 						ret = write(fd, bp, caplen + RAW_HLEN);
 					else if (use_stdout) {
-						raw_hdr = bp;
+						raw_hdr = (struct raw_header*) bp;
 
 						sprintf(hexdump_desc, "Frame %zu: %hu bytes (%hu captured). Timestamp: %u.%u",
 								frame_count, raw_hdr->len, raw_hdr->caplen,
@@ -145,7 +145,7 @@ int main(int argc, char **argv)
 			close(fd);
 	}
 
-	printf("Received %zu frames (%d bytes)\n", frame_count, i);
+	printf("Received %zu frames (%lu bytes)\n", frame_count, i);
 
 	hpcap_unmap(&hp);
 	hpcap_close(&hp);

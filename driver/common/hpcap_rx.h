@@ -24,6 +24,7 @@ struct  __attribute__((__packed__)) frame_descriptor {
 #ifdef HPCAP_MLNX
 	rx_descr_t 	  _rxd[MAX_DESCRIPTORS];
 #endif
+	uint32_t 	  rss_hash;					  /**< RSS hash provided by hardware, used for duplicate detection. */
 };
 
 /**

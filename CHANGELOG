@@ -1,0 +1,57 @@
+v4.2.3 			HPCAP Version 4.2.3
+	Maintainer: Guillermo Julián <guillermo.julian@naudit.es>
+	Date: 27/11/2015
+
+	This is a version with minor bugfixes.
+
+	- [Fix] Fix issues in systems with autorenaming of interfaces.
+	- [Fix] Fix build bugs in CentOS and in the 3.11 and 3.13 Ubuntu kernels.
+	- [Fix] Add a header that was causing errors when compiling the library.
+	- [Fix] Fix hugepage mappints when not using the default hugepage path.
+
+v4.2.2			HPCAP Version 4.2.2
+	Maintainer: Guillermo Julián <guillermo.julian@naudit.es>
+	Date: 17/10/2015
+
+	This is a version with minor bugfixes and some nice small features.
+
+	- [Fix] Avoid ixgbe/hpcap driver conflicts when installing to the system.
+	- [Scripts] The hpcap-status script gives a quick glance at the status of the
+		HPCAP driver (install status, hugepage usage, traffic/losses rate).
+	- [Fix] Minor fixes on packing
+
+v4.2.1			HPCAP Version 4.2.1
+	Maintainer: Guillermo Julián <guillermo.julian@estudiante.uam.es>
+	Date: 30/9/2015
+
+	Changelog:
+
+	- [Fix] Fix install error that happened when the first interface (index 0)
+		was not in HPCAP mode.
+	- [Fix] Other minor fixes in the Makefile (not critical).
+
+v4.2.0			HPCAP Version 4.2.0
+	Maintainer: Guillermo Julián <guillermo.julian@estudiante.uam.es>
+	Date: 21/09/2015
+
+	Changelog:
+
+	- [Features] Added hugepages support (see doc/HPCAP_UserGuide.pdf, section Hugepages)
+	- [Features] The driver can now be installed to the system.
+	- [Features] The interface numbers now are based on PCI bus, device and function of the corresponding adapter. This should make them always the same over reboots and driver reinstalls.
+	- [Docs] Added documentation for developers.
+	- [Build] The driver can be built in different configurations (debug, release) simultaneously.
+	- [Build] Added a debug configuration that outputs more information to the kernel log.
+	- [Build] Added support for the 3.11.0 kernel.
+	- [Scripts] Added the parse_hpcap_log script to help in the parsing of hpcap monitor logs.
+	- [Fix] Fixed a bug where a listener would magically disappear from the driver registers and crash the client application (the error that appeared in the kernel log was "No se ha encontrado listener...").
+
+v4.1.0
+	- Version date: 16/04/2015
+	- Author: Victor Moreno (victor.moreno@uam.es)
+	- Features:
+		- Stable version
+		- Minor bugs fixed
+		- Supports physical (HPCAP) and virtual (HPCAPvf) scenarios
+		- Merged with detect-pro / m3omon
+		- Added feature for resizing interfaces' buffer in terms of #pages

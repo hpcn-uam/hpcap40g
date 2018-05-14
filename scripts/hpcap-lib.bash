@@ -4,6 +4,8 @@
 # AUX FUNCTIONS USED BY OTHER SCRIPTS
 #######################
 
+base_driver_types="ixgbe i40e i40evf"
+
 die() { echo "$@" 1>&2 ; exit 1; }
 
 function negocia_iface()
@@ -23,8 +25,8 @@ function negocia_iface()
 	if [ "$basedriver" = "i40e" ]; then
 		echo "Performing i40e interrupt moderation adjustments"
 		ethtool -C $1 rx-usecs 0 tx-usecs 0 adaptive-rx off adaptive-tx off rx-usecs-high 0
-		ifconfig $1 down
-		ifconfig $1 up
+		ip link set $1 down
+		ip link set $1 up
 	fi
 }
 function check_iface_link()
@@ -39,7 +41,8 @@ function check_iface_link()
 }
 function remove_module()
 {
-	if lsmod | grep $1 &> /dev/null; then
+	# Use \<, \> to match the full word and not just part of the module name.
+	if lsmod | grep "\<$1\>" &> /dev/null; then
 		echo "     -> Deleting kernel module $1"
 		rmmod $1
 	fi
@@ -352,6 +355,8 @@ function get_driver_type()
 
 	if [[ "$kofile" = *"mlx.ko" ]]; then
 		echo "mlnx"
+	elif [[ "$kofile" = *"ivf.ko" ]]; then
+		echo "i40evf"
 	elif [[ "$kofile" = *"vf.ko" ]]; then
 		echo "vf"
 	elif [[ "$kofile" = *"i.ko" ]]; then
@@ -393,13 +398,15 @@ function ensure_iface_naming()
 {
 	local iface="$1"
 
-	if ! ifconfig $iface &> /dev/null; then
+	if ! ip link show $iface &> /dev/null; then
 		local renamed="";
 
 		if dmesg | grep "renamed network interface $iface" &> /dev/null; then
 			renamed=$(dmesg | grep "renamed network interface $iface" | tail -n 1 | awk '{ print $NF }')
 		elif dmesg | grep "hpcap_register_chardev: $iface has" &> /dev/null; then
-			renamed=$(dmesg | grep "hpcap_register_chardev: hpcap0 has" | tail -n 1 | sed -E 's/\[.*\]//g' | awk '{ print $1 }' | tr -d ':')
+			renamed=$(dmesg | grep "hpcap_register_chardev: $iface has" | tail -n 1 | sed -E 's/\[.*\]//g' | awk '{ print $1 }' | tr -d ':')
+		elif dmesg | grep ": renamed from $iface" &> /dev/null; then
+			renamed=$(dmesg | grep ": renamed from $iface" | tail -n 1 | sed -E 's/.* ([a-zA-Z0-9]+): renamed.*/\1/')
 		fi
 
 		if [ -z "$renamed" ]; then
@@ -407,7 +414,7 @@ function ensure_iface_naming()
 		else
 			echo "Found udev rename $iface -> $renamed"
 
-			if ifconfig $renamed down && ip link set $renamed name $iface ; then
+			if ip link set $renamed down && ip link set $renamed name $iface ; then
 				echo "$renamed renamed back to $iface"
 			else
 				echor "Could not rename $renamed"
@@ -421,8 +428,8 @@ function ensure_no_taking_down_links()
 	local driver="$1"
 
 	# Sorry for the superlong pipe command. But it's cool, isn't it?
-	local driver_ifaces_with_link=$(route -n | awk 'NR > 2 { print $8 }' | sort | uniq | \
-		grep -vE "lo|hpcap|xgb" | xargs -n 1 -I {} bash -c "ethtool -i {} 2>/dev/null | grep -E '^driver:[ \t]+${driver}' &>/dev/null && echo {}")
+	local driver_ifaces_with_link=$(ip route | sed -E 's/.* dev (\w+).*/\1/' | sort | uniq \
+		| grep -vE "lo|hpcap|xgb" | xargs -n 1 -I {} bash -c "ethtool -i {} 2>/dev/null | grep -E '^driver:[ \t]+${driver}' &>/dev/null && echo {}")
 
 	if [ ! -z "$driver_ifaces_with_link" ]; then
 		echoy "Warning: Unloading the driver $driver will take down the active interfaces $(echo $driver_ifaces_with_link | tr '\n' ',')"
@@ -455,6 +462,7 @@ function interface_up_hpcap()
 	local core=$(get_real_core_index $(read_value_param "core${iface_index}"))
 	local nrxq=$(read_value_param nrxq)
 	local speed=$(read_value_param "vel${iface_index}")
+	local dups=$(read_value_param "dup${iface_index}")
 
 	ensure_iface_naming $iface
 
@@ -490,9 +498,14 @@ function interface_up_hpcap()
 		done
 	fi
 
-	ifconfig ${iface} up promisc
+	ip link set ${iface} up
+	ip link set ${iface} promisc on
 	set_irq_affinity $iface $core
 	negocia_iface ${iface} $speed
+
+	if [ $dups == 1 ]; then
+		ethtool -K $iface rxhash on
+	fi
 
 	local ip=$(read_value_param "ip${iface_index}")
 	local netmask=$(read_value_param "mask${iface_index}")
@@ -509,15 +522,14 @@ function interface_up_hpcap()
 	fi
 }
 
-# Returns the PCI devices on this system that are supported by HPCAP.
-function find_hpcap_pci_devs()
+function write_ixgbe_pci_devs()
 {
-	local tmp_pcifile=$(mktemp)
+	local pcifile="$1"
 
 	# File with the PCI IDs of the supported devices (Vendor:Device)
 	# Yup, this is pretty ugly, but works independently of where's this script
 	# placed.
-	cat << EOF > $tmp_pcifile
+	cat << EOF > $pcifile
 8086:10f8
 8086:10f9
 8086:10fb
@@ -529,7 +541,45 @@ function find_hpcap_pci_devs()
 8086:154f
 8086:1557
 8086:1528
+8086:1563
 EOF
+}
+
+function write_i40e_pci_devs()
+{
+	local pcifile="$1"
+
+	cat << EOF > $pcifile
+8086:1584
+EOF
+}
+
+function write_i40evf_pci_devs()
+{
+	local pcifile="$1"
+
+	cat << EOF > $pcifile
+8086:154c
+EOF
+}
+
+
+# Returns the PCI devices on this system that are supported by HPCAP.
+function find_hpcap_pci_devs()
+{
+	local driver_type="$1"
+	local tmp_pcifile=$(mktemp)
+
+	if [ "$driver_type" = "ixgbe" ]; then
+		write_ixgbe_pci_devs $tmp_pcifile
+	elif [ "$driver_type" = "i40e" ]; then
+		write_i40e_pci_devs $tmp_pcifile
+	elif [ "$driver_type" = "i40evf" ]; then
+		write_i40evf_pci_devs $tmp_pcifile
+	else
+		echo "Unrecognized driver type $driver_type, cannot get PCI devs" > /dev/stderr
+		exit 0
+	fi
 
 	lspci -mn | tr -d '"' | awk -vpciFile="$tmp_pcifile" '
 BEGIN {
@@ -640,13 +690,24 @@ function is_paramfile_valid()
 
 	local use_vf="$(read_value_param use_vf)"
 
-	if [ "$use_vf" -ne 0 ] && [ "$use_vf" -ne 1 ]; then
-		echoy "Warning: use_vf has value '$use_vf', accepted values are 0 or 1"
-		echo "\tAnything other than 0 will cause the virtual function to activate, so this probably isn't what you want."
+	if [ ! -z "$use_vf" ]; then
+		echoy "Warning: use_vf parameter is deprecated and does not have any effect."
+		echoy "         Set driver_type value to the appropriate driver."
 	fi
 
 	test_is_param_in_bounds nrxq 1 || has_error=1
 	test_is_param_in_bounds ntxq 1 || has_error=1
+
+	local driver_type="$(read_value_param driver_type)"
+
+	if [ ! -z "$driver_type" ]; then
+		local regex=\\b$driver_type\\b  # We need a temp variable to use the regex. \\b matches word boundary
+
+		if [[ ! $base_driver_types =~ $regex ]]; then
+			echor "Error: Unrecognized driver_type = $driver_type. Available options: $base_driver_types"
+			has_error=1
+		fi
+	fi
 
 	local ifaces=$(read_value_param ifs)
 	local iface_count=$(read_value_param nif)
@@ -833,6 +894,7 @@ function ensure_link()
 # Args:
 # 	- Rate (Mbps)
 # 	- Frame size (bytes)
+# 	- Output file for the generator
 function start_generator()
 {
 	local generator_cmd=""
@@ -854,7 +916,7 @@ function start_generator()
 		local generation_rate_Gbps=$(($rate_Mbps / 1000))
 		log "Sending ${generation_rate_Gbps}Gbps through port $generator_port"
 
-		generator_cmd="cd MoonGen; sudo ./build/MoonGen fixed-rate.lua ${generator_port} ${generation_rate_Gbps} ${framesize}"
+		generator_cmd="cd MoonGen; ./build/MoonGen fixed-rate.lua ${generator_port} ${generation_rate_Gbps} ${framesize}"
 	elif [ "$generator_mode" = "fpga" ]; then
 		log "FPGA generator does not support rate limiting."
 		log "Sending at wire rate through port $generator_port"
@@ -870,6 +932,54 @@ function start_generator()
 		log "start_generator: generator mode $generator_mode"
 		test_fail_die
 	fi
+
+	log "Generator command is $generator_cmd"
+
+	ssh -t $generator_ssh_host "$generator_cmd" > $generator_out 2>&1 &
+	ssh_pid="$!"
+
+	sleep 1
+
+	if ! is_pid_running $ssh_pid &> /dev/null ; then
+		log "ssh remote command did not start correctly"
+		test_fail_die
+	fi
+}
+
+# Starts the generator with support for duplicate generation
+# Args:
+# 	- Rate (Mbps)
+# 	- Frame size (bytes)
+# 	- Duplicate frequency (A duplicate will appear, in average, every "duplicate frequency"
+# 		number of packets).
+# 	- Output file for the generator
+function start_generator_with_duplicate()
+{
+	local generator_cmd=""
+	local rate_Mbps="$1"
+	local framesize="$2"
+	local dupfreq="$3"
+	local generator_out="$4"
+
+	if [ -z "$generator_out" ]; then
+		generator_out=$logfile
+	fi
+
+	if [ "$generator_mode" = "moongen" ]; then
+		log "Using MoonGen for traffic generation"
+		scp scripts/fixed-rate.lua ${generator_ssh_host}:MoonGen &> $logfile
+		scp scripts/duplicate-frames.lua ${generator_ssh_host}:MoonGen &> $logfile
+
+		local generation_rate_Gbps=$(($rate_Mbps / 1000))
+		log "Sending ${generation_rate_Gbps}Gbps through port $generator_port"
+
+		generator_cmd="cd MoonGen; ./build/MoonGen duplicate-frames.lua ${generator_port} ${generation_rate_Gbps} ${framesize} ${dupfreq}"
+	else
+		log "Generator $generator_mode does not support traffic generation with duplicates"
+		test_fail_die
+	fi
+
+	log "Generator command is $generator_cmd"
 
 	ssh -t $generator_ssh_host "$generator_cmd" > $generator_out 2>&1 &
 	ssh_pid="$!"
@@ -887,9 +997,9 @@ function stop_generator()
 	log "Stopping generator..."
 
 	if [ "$generator_mode" = "moongen" ]; then
-		ssh -t $generator_ssh_host "sudo killall -INT MoonGen"
+		ssh -t $generator_ssh_host "killall -INT MoonGen" &> /dev/null
 		sleep 3
-		ssh -t $generator_ssh_host "sudo killall -TERM MoonGen" &> /dev/null
+		ssh -t $generator_ssh_host "killall -TERM MoonGen" &> /dev/null
 		sleep 1
 		kill -TERM $ssh_pid >> $logfile 2>&1
 	elif [ "$generator_mode" = "hpcn_latency" ]; then
@@ -905,11 +1015,45 @@ function stop_generator()
 		sleep 1
 	fi
 
-	if is_pid_running $ssh_pid >> $logfile 2>&1; then
+	if is_pid_running $ssh_pid >> $logfile 2>&1 ; then
 		log "Could not stop sender/receiver. Aborting."
 		log "Beware: the generator and/or receiver could be in an incosistent state."
 		test_fail_die
 	fi
 }
 
+function has_dupremoval_enabled()
+{
+	local driver_file="$1"
 
+	if [ -z "$driver_file" ]; then
+		driver_file="../bin/release/hpcap.ko"
+	fi
+
+	modinfo -F version $driver_file 2>&1 | grep "dup-removal" &> /dev/null
+}
+
+function get_pci_addr_for_iface()
+{
+	local iface="$1"
+
+	ethtool -i $iface | grep "bus-info" | awk '{ print $2 }'
+}
+
+function get_module_for_driver_type()
+{
+	local drivtype="$1"
+
+	if [ "$drivtype" = "ixgbe" ]; then
+		echo hpcap.ko
+	elif [ "$drivtype" = "ixgbevf" ]; then
+		echo hpcapvf.ko
+	elif [ "$drivtype" = "i40e" ]; then
+		echo hpcapi.ko
+	elif [ "$drivtype" = "i40evf" ]; then
+		echo hpcapivf.ko
+	else
+		echo "Unrecognized driver type $drivtype" > /dev/stderr
+		exit 1
+	fi
+}

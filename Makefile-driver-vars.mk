@@ -2,20 +2,26 @@ ifeq (,$(BUILD_KERNEL))
 BUILD_KERNEL=$(shell uname -r)
 endif
 
-PRE_EXCLUDED_CFILES = hpcap_params_1.c hpcap_params_2.c kcompat_ethtool.c i40e_fcoe.c
+PRE_EXCLUDED_CFILES = hpcap_params_1.c hpcap_params_2.c kcompat_ethtool.c i40e_fcoe.c ixgbe_hv_vf.c ixgbe_cna.c
 EXTRA_HFILES =
 
 DRIV_SUFFIX = $(shell echo $(DRIVER_NAME) | sed -E 's/hpcap(\w*)/\1/' | tr '[:lower:]' '[:upper:]')
 
 ifeq ($(DRIV_SUFFIX),MLX)
 DRIV_MACRO_ID = "HPCAP_MLNX"
+$(info HPCAP_MLNX)
 else
 ifeq ($(DRIV_SUFFIX),I)
 DRIV_MACRO_ID = "HPCAP_I40E"
 else
+ifeq ($(DRIV_SUFFIX),IVF)
+DRIV_MACRO_ID = "HPCAP_I40EVF"
+else
 DRIV_MACRO_ID = "HPCAP_IXGBE$(DRIV_SUFFIX)"
 endif
 endif
+endif
+
 
 ###########################################################################
 # Environment tests
@@ -28,7 +34,9 @@ KSP :=  /lib/modules/$(BUILD_KERNEL)/build \
         /usr/src/linux-$($(BUILD_KERNEL) | sed 's/-.*//') \
         /usr/src/kernel-headers-$(BUILD_KERNEL) \
         /usr/src/kernel-source-$(BUILD_KERNEL) \
+        /usr/src/kernels/$(BUILD_KERNEL) \
         /usr/src/linux-$($(BUILD_KERNEL) | sed 's/\([0-9]*\.[0-9]*\)\..*/\1/') \
+        /usr/src/kernels/$($(BUILD_KERNEL) | sed 's/\([0-9]*\.[0-9]*\)\..*/\1/') \
         /usr/src/linux
 
 # prune the list down to only values that exist
@@ -128,6 +136,7 @@ EXTRA_CFLAGS += -I$(KSRC)/include -I.
 EXTRA_CFLAGS += $(shell [ -f $(KSRC)/include/linux/modversions.h ] && \
             echo "-DMODVERSIONS -DEXPORT_SYMTAB \
                   -include $(KSRC)/include/linux/modversions.h")
+EXTRA_CFLAGS += -fno-pie
 
 ifneq (,$(DRIV_MACRO_ID))
 EXTRA_CFLAGS += -D$(DRIV_MACRO_ID)

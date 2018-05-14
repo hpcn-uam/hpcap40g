@@ -20,13 +20,9 @@ void stop_signal(int sign)
 
 int main(int argc, char **argv)
 {
-	int fd = 1;
 	struct hpcap_handle hp;
 	int ret = 0;
-	unsigned long int i = 0;
 	int ifindex = 0, qindex = 0;
-	short use_stdout = 0;
-	struct timeval initwr;
 	struct raw_header* raw_hdr;
 	size_t frame_count = 0;
 	double prev_ts = 0, ts;
@@ -74,7 +70,7 @@ int main(int argc, char **argv)
 			hpcap_read_packet(&hp, &bp, auxbuf, &caplen, NULL);
 
 			if (bp) {
-				raw_hdr = bp;
+				raw_hdr = (struct raw_header*) bp;
 				ts = raw_hdr->sec + 10e-9 * raw_hdr->nsec;
 
 				if (frame_count > 0 && ts + 100 * 10e-9 < prev_ts)

@@ -23,7 +23,7 @@ static inline void usage()
 static size_t parse_size(char* sz)
 {
 	char modifier = sz[strlen(sz) - 1];
-	size_t multiplier;
+	size_t multiplier = 1;
 	size_t number;
 
 	sz[strlen(sz) - 1] = 0;

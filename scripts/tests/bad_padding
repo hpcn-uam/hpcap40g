@@ -34,7 +34,7 @@ scp scripts/force-bad-padding.lua ${generator_ssh_host}:MoonGen &> $logfile
 
 log "Sending death frames through port $generator_port"
 
-generator_cmd="cd MoonGen; sudo ./build/MoonGen force-bad-padding.lua ${generator_port}"
+generator_cmd="cd MoonGen; ./build/MoonGen force-bad-padding.lua ${generator_port}"
 
 ssh -t $generator_ssh_host "$generator_cmd" >> $logfile 2>&1 &
 ssh_pid="$!"
@@ -53,9 +53,9 @@ sleep $bad_padding_gen_duration_seconds
 log "Woke up, stopping."
 
 kill -TERM $hpcapdd_pid >> $logfile 2>&1
-ssh -t $generator_ssh_host "sudo killall -INT MoonGen"
+ssh -t $generator_ssh_host "killall -INT MoonGen" &> /dev/null
 sleep 3
-ssh -t $generator_ssh_host "sudo killall -TERM MoonGen" &> /dev/null
+ssh -t $generator_ssh_host "killall -TERM MoonGen" &> /dev/null
 sleep 1
 kill -TERM $ssh_pid >> $logfile 2>&1
 

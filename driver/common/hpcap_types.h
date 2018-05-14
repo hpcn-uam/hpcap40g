@@ -11,6 +11,7 @@
 #define HPCAP_TYPES_H
 
 #include <linux/types.h>
+#include <linux/device.h>
 #include <linux/cdev.h>
 #include <linux/spinlock.h>
 #include <linux/module.h>
@@ -22,17 +23,26 @@
 
 #if defined(HPCAP_IXGBE) || defined(HPCAP_IXGBEN)
 #include "ixgbe.h"
+#define HPCAP_INTEL
 #elif defined(HPCAP_IXGBEVF)
 #include "ixgbevf.h"
+#define HPCAP_INTEL
 #elif defined(HPCAP_MLNX)
 #include "mlx4_en.h"
+#define HPCAP_40G
 #elif defined(HPCAP_I40E)
 #include "i40e.h"
+#define HPCAP_INTEL
+#define HPCAP_40G
+#elif defined(HPCAP_I40EVF)
+#include "i40evf.h"
+#define HPCAP_INTEL
+#define HPCAP_40G
 #endif
 
-#if ( defined(HPCAP_IXGBE) || defined(HPCAP_IXGBEVF) || defined(HPCAP_I40E))
+#ifdef HPCAP_INTEL
 
-#ifndef HPCAP_I40E
+#ifndef HPCAP_40G
 typedef union ixgbe_adv_rx_desc rx_descr_t;
 #else
 typedef union i40e_rx_desc rx_descr_t;
@@ -45,7 +55,7 @@ typedef union i40e_rx_desc rx_descr_t;
 #define ring_get_next_rxd(ring) ((ring)->next_to_clean)
 #define ring_size(ring) 		(ring->count)
 
-#ifdef HPCAP_I40E
+#ifdef HPCAP_40G
 #define rxd_hash(rx_desc) 		le32_to_cpu(rx_desc->wb.lower.hi_dword.rss)
 #define rxd_length(rx_desc) 	((le64_to_cpu(rx_desc->wb.qword1.status_error_len) & I40E_RXD_QW1_LENGTH_PBUF_MASK) >> I40E_RXD_QW1_LENGTH_PBUF_SHIFT)
 #define rxd_status(rx_desc)		((uint32_t)( \
@@ -94,19 +104,23 @@ typedef int rxd_idx_t;
 #define DRIVER_VALIDATE_OPTION(a,b) ixgbevf_validate_option(a,b)
 #define ring_rxd_release(R,i) ixgbevf_release_rx_desc((R), (i))
 
-#elif defined(HPCAP_I40E)
+#elif defined(HPCAP_40G)
 
 #define ring_get_rxd(R,i) I40E_RX_DESC((R), (i))
 #define ring_get_buffer(rxd,ring,i) ( (u8 *) ( ring->window[i >> I40E_SUBWINDOW_BITS] + (i & I40E_SUBWINDOW_MASK)*MAX_DESCR_SIZE ) )
 #define packet_dma(ring,i) ( (u64) ( ring->dma_window[i >> I40E_SUBWINDOW_BITS] + (i & I40E_SUBWINDOW_MASK) * MAX_DESCR_SIZE ) )
 
+#ifdef HPCAP_I40E
 typedef struct i40e_vsi HW_ADAPTER;
+#else
+typedef struct i40evf_adapter HW_ADAPTER;
+#endif
+
 typedef struct i40e_ring HW_RING;
 
 typedef uint16_t rxd_idx_t;
 
 #define ring_rxd_release(R,i) i40e_release_rx_desc((R), (i))
-
 
 #endif /* HPCAP_IXGBEVF */
 #elif defined(HPCAP_MLNX)  /* HPCAP_IXGBEVF || HPCAP_IXGBE */
@@ -162,7 +176,10 @@ struct hpcap_listener {
 	size_t bufferWrOffset; /**< Offset of the last write in the HPCAP buffer. */
 	size_t bufferRdOffset; /**< Offset of the last read from the client in the buffer */
 	size_t bufsz;		/**< Size of the HPCAP buffer */
+	struct file* filp;	/**< Pointer to the associated file structure */
 };
+
+#define MAX_FORCE_KILLED_LISTENERS (3 * MAX_LISTENERS)
 
 /**
  * This structure holds all the information for the listeners linked to a buffer.
@@ -175,6 +192,8 @@ struct hpcap_buffer_listeners {
 	spinlock_t lock;		 		/**< Lock for write access over the array */
 	atomic_t listeners_count;	 	/**< Number of active listeners. */
 	atomic_t already_popped;		/**< Detects whether the listeners already read some frames. Useful to avoid misaligned accesses. */
+	int force_killed_listener_ids[MAX_FORCE_KILLED_LISTENERS]; 	/**< An array with the IDs of the listeners that were force destroyed. */
+	atomic_t force_killed_listeners; 	/**< Number of listeners that were force killed. No atomics as we suppose prod */
 };
 
 struct hpcap_profile {

@@ -70,8 +70,6 @@ int main(int argc, char **argv)
 	//struct timeval init, end;
 	struct raw_header* raw_hdr;
 	size_t frame_count = 0;
-	uint8_t *buffer;
-	size_t buffer_size;
 	size_t prev_acks, prev_rdoff;
 	double end_dist_avg = 0;
 	double end_dist_std = 0;
@@ -85,7 +83,7 @@ int main(int argc, char **argv)
 	short last_unwritten = 0;
 
 	u_char auxbuf[RAW_HLEN + MAX_PACKET_SIZE];
-	struct timespec ts_start, ts_end, wait;
+	struct timespec ts_start, ts_end;
 
 	//gettimeofday(&init, NULL);
 	if (argc != 4) {
@@ -116,12 +114,6 @@ int main(int argc, char **argv)
 	}
 
 	signal(SIGINT, capturaSenial);
-
-	buffer = hp.buf;
-	buffer_size = hp.bufSize;
-
-	wait.tv_nsec = 1000;
-	wait.tv_sec = 0;
 
 	printf("Consistency check: Frame size %zu (%zu in buffer)\n", frame_size, frame_in_buffer_size);
 

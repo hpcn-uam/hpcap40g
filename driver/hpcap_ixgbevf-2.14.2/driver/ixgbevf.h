@@ -57,6 +57,11 @@
 #define IXGBE_NO_HW_RSC 1
 #include "hpcap.h"
 #include "hpcap_debug.h"
+
+#ifdef HPCAP_SYSFS
+#include "hpcap_sysfs_types.h"
+#endif
+
 #endif /* DEV_HPCAP */
 
 #define IXGBE_MAX_TXD_PWR	14
@@ -315,7 +320,7 @@ static inline bool ixgbevf_qv_unlock_napi(struct ixgbevf_q_vector *q_vector)
 	int rc = false;
 	spin_lock_bh(&q_vector->lock);
 	WARN_ON(q_vector->state & (IXGBEVF_QV_STATE_POLL |
-							   IXGBEVF_QV_STATE_NAPI_YIELD));
+	                           IXGBEVF_QV_STATE_NAPI_YIELD));
 
 	if (q_vector->state & IXGBEVF_QV_STATE_POLL_YIELD)
 		rc = true;
@@ -398,7 +403,7 @@ static inline bool ixgbevf_qv_disable(struct ixgbevf_q_vector *q_vector)
 
 /* ixgbevf_test_staterr - tests bits in Rx descriptor status and error fields */
 static inline __le32 ixgbevf_test_staterr(union ixgbe_adv_rx_desc *rx_desc,
-		const u32 stat_err_bits)
+        const u32 stat_err_bits)
 {
 	return rx_desc->wb.upper.status_error & cpu_to_le32(stat_err_bits);
 }
@@ -446,8 +451,8 @@ struct ixgbevf_adapter {
 	int core;//new
 	int numa_node;
 	int work_mode;
-	int dup_mode;
-	int caplen;
+	atomic_t dup_mode;
+	atomic_t caplen;
 	unsigned int bufpages;
 	size_t consumers;
 	unsigned long long hpcap_client_loss;
@@ -455,6 +460,7 @@ struct ixgbevf_adapter {
 #ifdef REMOVE_DUPS
 	unsigned long long total_dup_frames;
 #endif
+	struct hpcap_dev_attrs hpcap_dev_attrs;
 #endif /* DEV_HPCAP */
 
 	unsigned long state;

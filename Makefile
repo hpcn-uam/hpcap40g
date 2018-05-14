@@ -7,13 +7,14 @@ KERN_DEBUG_ENVVARS = CONFIG_DEBUG_INFO=1
 RELEASE_CFLAGS = -O3 -march=native
 KERN_RELEASE_CFLAGS = -O3
 KERN_RELEASE_ENVVARS =
-LDFLAGS = -lhpcap -lnuma -lpcap -lpthread -lm -lmgmon
+LDFLAGS = -lhpcap -lpcap -lpthread -lm -lmgmon
 DEBUG_LDFLAGS = -Llib/debug
 RELEASE_LDFLAGS = -Llib/release
 LATEXFLAGS = -pdf -silent -synctex=1 -shell-escape
+VERBOSE = 0
 
 # Uncomment to build the driver for a specific kernel version
-# BUILD_KERNEL=3.2.0-23-generic
+# BUILD_KERNEL=4.8.0-32-generic
 
 # Directory variables
 BINDIR = bin
@@ -78,8 +79,6 @@ all: $(ALL_TARGETS)
 libs: $(LIB_NAMES)
 samples: $(SAMPLES)
 
-.FORCE:
-
 # For debugging
 print-%: ; @echo $*=$($*)
 
@@ -102,6 +101,8 @@ help:
 	@echo "- uninstall: Uninstall the driver from the system."
 	@echo "- pack: Pack the source code in a .tar.gz file in the current directory."
 	@echo "- dist: Pack the source code and binaries in a ready-to-install package."
+	@echo "- format: Run the astyle formatter"
+	@echo "- check: Check the folder structure is correct and output readable errors"
 	@echo ""
 	@echo "Apart from those generic rules, you can use specific rules, such as bin/[conf]/[binary]"
 	@echo "or lib/[conf]/[library] to build just one file in one given configuration. Drivers are"
@@ -113,6 +114,9 @@ help:
 	@echo "Drivers: $(DRIV_TARGETS)"
 	@echo "Sample applications: $(SAMPLES)"
 	@echo "Libraries: $(LIB_NAMES)"
+	@echo ""
+	@echo "Note: If some target gives Makefile errors, first try to run make clean, rm -rf obj, and/or run make check"
+	@echo "      to see if it is some common error (like not having the correct folder structure)."
 
 ####################################
 ## Build configuration management ##
@@ -138,6 +142,14 @@ ALL_DEPS = $(SAMPLE_DEPS) $(LIB_DEPS)
 
 config: $(ALL_CONFS)
 depend: $(ALL_DEPS)
+
+check:
+	@for driver in $(DRIV_NAMES); do \
+		if [ ! -d $(DRIVDIR)/$$driver/driver ]; then \
+			echo "Error: Cannot build $$driver: folder $(DRIVDIR)/$$driver/driver does not exist"; \
+		fi; \
+	done; \
+
 
 # If the kernel version is fixed, we have to add it to the kernel environment variables
 ifneq (,$(BUILD_KERNEL))
@@ -189,7 +201,10 @@ generate_deps = \
 	done; \
 	mv "$(1).0" $(1)
 
-drivname = $(shell echo $(1) | sed -E 's/hpcap_(ixgbe)?([a-zA-Z]*).*/hpcap\2/')
+# This function is just a regex that constructs the hpcap driver name from the folder name
+# E.g., hpcap_i40e-1.4.25 is converted to hpcapi, hpcap_ixgbevf-2.14.2 is converted to
+# hpcapvf, etc.
+drivname = $(shell echo $(1) | sed -E 's/hpcap_(ixgbe)?([a-zA-Z]*)[0-9e]*(vf)?.*/hpcap\2\3/')
 
 DRIV_TARGETS := $(foreach driver, $(DRIV_NAMES), $(call drivname, $(driver)))
 DRIV_BINARIES := $(foreach conf, $(CONFS), $(wildcard $(BINDIR)/$(conf)/*.ko))
@@ -282,30 +297,38 @@ $(OBJDIR)/.lib-%-deps.mk: $(LIBSRCDIR)/%/*.c Makefile | $(OBJDIR)
 ####################################
 SOURCES_AFFECTING_VERSION := $(filter-out $(COMMON_DIR)/hpcap_version.h, $(ALL_SRCS))
 
-VERSION_FILE = .svnversion
-DEFAULT_BRANCH = trunk
-BRANCH = $(shell svn info 2> /dev/null | grep '^URL:' | egrep -o '(tags|branches)/[^/]+|trunk' || echo "$(DEFAULT_BRANCH)")
-REVISION = $(shell svnversion -n 2>/dev/null || cat $(VERSION_FILE) 2>/dev/null || echo "no-cvs-info")
+# Use "wildcard" to avoid errors due to unexisting files when not running without the .git
+# directory. If the .git directory is not present, GIT_INFO_FILES will be empty.
+GIT_INFO_FILES := $(wildcard .git/index) $(wildcard .git/HEAD)
+VERSION_FILE = .gitversion
+GIT_BRANCH = $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "master")
+GIT_COMMIT = $(shell git describe --dirty --tags --always --abbrev=7 --match="v*" || cat $(VERSION_FILE) 2>/dev/null || echo "no-git-info")
 
-VERSION_BRANCH_INFO = from $(BRANCH)
+ifeq (master,$(GIT_BRANCH))
+VERSION_BRANCH_INFO =
+else
+VERSION_BRANCH_INFO = , branch $(GIT_BRANCH)
+endif
 
-# hpcap_version.h should be regenerated also when the SVN revision changes.
-# However, SVN is not like git where we have a nice file that changes when
-# the revision or HEAD pointer changes, so I can't do that. I can't neither
-# make this file depend on VERSION_FILE because it hangs the build process.
-$(COMMON_DIR)/hpcap_version.h: $(SOURCES_AFFECTING_VERSION)
+# Only overwrite the version file if we can extract significant info (that is, the .git directory)
+# is present.
+$(COMMON_DIR)/hpcap_version.h: $(SOURCES_AFFECTING_VERSION) $(GIT_INFO_FILES)
+ifneq (,$(GIT_INFO_FILES))
 	@echo "#ifndef HPCAP_VERSION_H" > $@
 	@echo "#define HPCAP_VERSION_H" >> $@
-	@echo "#define HPCAP_REVISION \"$(REVISION) $(VERSION_BRANCH_INFO)\"" >> $@
+	@echo "#define HPCAP_REVISION \"$(GIT_COMMIT)$(VERSION_BRANCH_INFO)\"" >> $@
 	@echo "#define HPCAP_BUILD_DATE \"$(shell date +"%d %b %Y %R %Z")\"" >> $@
-	@echo "#define HPCAP_BUILD_INFO \"rev \" HPCAP_REVISION \" built \" HPCAP_BUILD_DATE" >> $@
+	@echo "#define HPCAP_BUILD_INFO HPCAP_REVISION \" built \" HPCAP_BUILD_DATE" >> $@
 	@echo "#endif" >> $@
-
-$(VERSION_FILE): .FORCE
-ifneq (,$(shell which svnversion 2>/dev/null))
-	@echo $(shell svnversion 2>/dev/null || echo "no-svn-info") > $@
 else
-	@[ -e $@ ] || echo "no-svn-info" > $@
+	@touch $@
+endif
+
+$(VERSION_FILE): $(GIT_INFO_FILES)
+ifneq (,$(GIT_INFO_FILES))
+	@echo $(shell git describe --dirty --tags --always --abbrev=7) > $@
+else
+	@touch $@
 endif
 
 version-info: $(COMMON_DIR)/hpcap_version.h $(VERSION_FILE)
@@ -410,11 +433,22 @@ TAR_EXCLUDES_SRC = $(TAR_EXCLUDES_DIST) bin lib
 TAR_EXCLUDES_DIST_ARG = $(addprefix --exclude=, $(TAR_EXCLUDES_DIST))
 TAR_EXCLUDES_SRC_ARG = $(addprefix --exclude=, $(TAR_EXCLUDES_SRC))
 
-TAR_BRANCH = _$(shell echo $(BRANCH) | tr '/' '-' | sed 's/release/pre-release/')
+# Only show the git branch if we're not on master
+ifeq (master,$(GIT_BRANCH))
+TAR_GITBRANCH =
+else
+TAR_GITBRANCH = _$(shell echo $(GIT_BRANCH) | tr '/' '-' | sed 's/release/pre-release/')
+endif
 
-TAR_TARGET = HPCAP$(TAR_BRANCH)_$(shell date +"%F")_rev$(subst :,-,$(REVISION))
+TAR_TARGET = HPCAP$(TAR_GITBRANCH)_$(shell date +"%F")_$(shell git describe --tags --always --match="v*")
 
-changes: version-info
+CHANGELOG: $(GIT_INFO_FILES)
+	@git tag -l -n99 "v*" > CHANGELOG
+
+VERSION.txt: $(GIT_INFO_FILES)
+	@git tag -l $(shell git describe) -n99 > VERSION.txt
+
+changes: CHANGELOG VERSION.txt version-info
 
 pack: docs changes
 	@cd ..; COPYFILE_DISABLE=1 tar $(TAR_EXCLUDES_SRC_ARG) -czf $(TAR_TARGET).tar.gz $(lastword $(notdir $(CURDIR)))
@@ -425,3 +459,10 @@ dist: release docs changes
 	@cd ..; COPYFILE_DISABLE=1 tar $(TAR_EXCLUDES_DIST_ARG) -czf $(TAR_TARGET)_dist.tar.gz $(lastword $(notdir $(CURDIR)))
 	@mv ../$(TAR_TARGET)_dist.tar.gz .
 	@echo "Packed $(TAR_TARGET).tar.gz."
+
+####################################
+## Some misc scripts			  ##
+####################################
+
+format:
+	astyle --options=.astylerc --recursive "driver/*.c" "driver/*.h" "samples/*.c" "samples/*.h" "include/*.h" "srclib/*.c"

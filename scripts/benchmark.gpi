@@ -5,6 +5,9 @@
 
 set term pngcairo size 1600,1000 dashed
 
+maxrate = 40 * 1000
+ifg = 20
+
 set title 'HPCAP Benchmark'
 
 set xlabel "Frame size (bytes)"
@@ -28,14 +31,13 @@ set grid xtics mxtics ls 102, ls 103
 set grid ytics mytics ls 102, ls 103
 
 set yrange [0:105]
-set y2range [0:40000]
+set y2range [0:maxrate]
 
 set output fout
 
 plot \
-	fin using 2:8 with lines title 'Capture %' lw 2 lt 1 lc rgb '#1B9E77', \
-	fin using 2:10 with lines title 'Lost %' lw 2 lt 1 lc rgb '#66A61E', \
-	fin using 2:12 with lines title 'Port Drop %' lw 2 lt 1 lc rgb '#E6AB02', \
-	fin using 2:4 with lines title 'Send rate' axes x1y2 lw 1 lt 1 lc rgb '#D95F02', \
-	fin using 2:(8 * $6 * $2 / ($3 * 1000000)) with lines axes x1y2 title 'Capture rate' lw 2 lt 1 lc rgb '#E7298A', \
-	40000*x/(x+20) with lines title 'Max rate' axes x1y2 lw 1 lt 1 lc rgb '#7570B3'
+	fin using 2:10 with linespoints ls 1 title 'Lost \%', \
+	fin using 2:12 with linespoints ls 2 title 'Port Drop \%',  \
+	fin using 2:4 with linespoints ls 3 title 'Send rate' axes x1y2, \
+	fin using 2:(8 * $6 * $2 / ($3 * 1000000)) with linespoints ls 4 axes x1y2 title 'Capture rate', \
+	maxrate*x/(x+ifg) with lines ls 5 title 'Theoretical max rate' axes x1y2

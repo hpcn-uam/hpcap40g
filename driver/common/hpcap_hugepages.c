@@ -89,7 +89,7 @@ int hpcap_huge_use(struct hpcap_buf* bufp, struct hpcap_buffer_info* bufinfo)
 
 	hpcap_update_listener_bufsizes(&bufp->lstnr, bufp->bufSize);
 
-	HPRINTK(INFO, "Hugepage buffer %s of size %zu correctly set up.\n", bufinfo->file_name, bufp->bufSize);
+	HPRINTK(INFO, "Hugepage buffer %s of size %llu correctly set up.\n", bufinfo->file_name, bufp->bufSize);
 
 	return 0;
 }

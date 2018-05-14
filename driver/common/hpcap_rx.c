@@ -14,6 +14,7 @@
 
 #include <linux/kthread.h>
 #include <linux/sched.h>
+#include <linux/nmi.h>
 #include <asm/atomic.h>
 
 #define CALC_CAPLEN(cap,len) ( (cap==0) ? (len) : (minimo(cap,len)) )
@@ -94,9 +95,15 @@ inline void rxd_get_tstamp(rx_descr_t* rxd, struct timespec* tv, HW_RING* ring)
 
 #endif
 
-#ifdef HPCAP_I40E
+#ifdef HPCAP_40G
 static inline void i40e_release_rx_desc(struct i40e_ring *rx_ring, u32 val)
 {
+#ifdef HPCAP_I40EVF
+	/* update next to alloc since we have filled the ring */
+	rx_ring->next_to_alloc = val;
+
+#endif
+
 	rx_ring->next_to_use = val;
 	/* Force memory writes to complete before letting h/w
 	 * know there are new descriptors to fetch.  (Only
@@ -207,7 +214,7 @@ static inline void hpcap_advance_read_descriptors(HW_RING* rx_ring, uint32_t las
 		rx_ring->queued = (last_read_idx + 1) % ring_size(rx_ring);
 		rx_ring->next_to_clean = (last_read_idx + 1) % ring_size(rx_ring);
 
-#ifdef HPCAP_I40E
+#ifdef HPCAP_40G
 		// TODO: Use bitmask
 		rx_ring->next_to_use = (last_read_idx / 8) * 8; // The XL710 only supports bumps of multiples of 8 descriptors.
 #else
@@ -340,7 +347,6 @@ static inline int check4packet(HW_RING *rx_ring, rxd_idx_t *qidx, char *dst_buf,
 {
 	rx_descr_t* rx_desc;
 	uint8_t *buffer;
-	struct hpcap_buf* bufp = rx_ring->bufp;
 
 	fd->parts        = 0;
 	fd->size         = 0;
@@ -364,7 +370,7 @@ static inline int check4packet(HW_RING *rx_ring, rxd_idx_t *qidx, char *dst_buf,
 		prefetchnta(rx_desc + 2);
 #endif
 
-#ifdef HPCAP_I40E
+#ifdef HPCAP_40G
 
 		if (can_lock_ring(rx_ring, *qidx, consumer))
 			return 0;
@@ -471,13 +477,10 @@ uint64_t hpcap_rx(HW_RING *rx_ring, size_t limit, uint8_t *dst_buf, struct hpcap
 	struct hpcap_buf *bufp = rx_ring->bufp;
 	size_t bufsize = bufp->bufSize;
 	atomic_t* wr_offset = &bufp->consumer_write_off;
-	atomic_t* rd_offset = &bufp->consumer_read_off;
 	size_t available, to_write;
 	size_t offset, offset_dst, file_final_offset, file_dst_offset, buffer_dst_offset = 0;
-	size_t padding_end, padding_begin;
-	size_t caplen = adapters[bufp->adapter]->caplen;
+	size_t caplen = atomic_read(&adapters[bufp->adapter]->caplen);
 	size_t padlen;
-	size_t padlen_noheader;
 	short owns_next_rxd = 1;
 	short out_of_space = 0;
 
@@ -664,7 +667,7 @@ ignore:
 #ifndef HPCAP_MLNX
 		fd.rx_desc[0]->read.pkt_addr = fd.rx_desc[0]->read.hdr_addr = cpu_to_le64(packet_dma(rx_ring, qidx));
 
-#ifdef HPCAP_I40E
+#ifdef HPCAP_40G
 		fd.rx_desc[0]->wb.qword1.status_error_len = 0;
 #endif
 #else
@@ -737,11 +740,20 @@ int hpcap_poll(void *arg)
 	size_t new_bytes, new_offset;
 	size_t batch = 0, sleep_each_batches = 50000000;
 	size_t bufsize = bufp->bufSize;
-	size_t i;
 
 #ifdef DEBUG_SLOWDOWN
+	int i = 0;
 	sleep_each_batches = 0;
 #endif
+
+#ifdef REMOVE_DUPS
+	struct hpcap_dup_info ** duptable;
+#endif
+
+	if (bufp == NULL) {
+		BPRINTK(ERR, "Fatal error: bufp structure is null. Aborting capture thread.\n");
+		return -1;
+	}
 
 	//set_current_state(TASK_UNINTERRUPTIBLE);//new
 	HPRINTK(INFO, "Poll thread %zu start.\n", thinfo->th_index);
@@ -759,6 +771,14 @@ int hpcap_poll(void *arg)
 		if (bufp->lstnr.global.bufferWrOffset < 0 || bufp->lstnr.global.bufferWrOffset >= bufp->bufSize)
 			HPRINTK(WARNING, "Wrong value for bufferWrOffset: %zu\n", bufp->lstnr.global.bufferWrOffset);
 
+#ifdef REMOVE_DUPS
+
+		if (atomic_read(&rx_ring->adapter->dup_mode))
+			duptable = bufp->dupTable;
+		else
+			duptable = NULL;
+
+#endif
 		avail = avail_bytes(&bufp->lstnr.global);
 		limit = avail / bufp->consumers;
 
@@ -777,7 +797,7 @@ int hpcap_poll(void *arg)
 #ifdef DEBUG_SLOWDOWN
 
 			// Sleep a lot so the debug output is readable
-			for (i = 0; i < 1000000 && !kthread_should_stop(); i++)
+			for (i = 0; i < 10000000 && !kthread_should_stop(); i++)
 				schedule_timeout(ns(200));
 
 #else
@@ -865,14 +885,19 @@ int hpcap_launch_poll_threads(HW_ADAPTER * adapter)
 	size_t starting_consumer;
 	uint32_t first_rxd;
 
-	adapter_dbg(DBG_NET, "Preparing to launch poll threads");
-
 	if (adapter == NULL) {
 		BPRINTK(WARNING, "hpcap_launch_poll_threads received a null adapter ¿?");
 		return 0;
 	}
 
+	adapter_dbg(DBG_NET, "Preparing to launch poll threads (%d RXQ, %d consumers)", adapter->num_rx_queues, adapter->consumers);
+
 	hpcap_check_naming(adapter);
+
+	if (adapter->core < 0) {
+		HPRINTK(ERR, "Configured core for is %d, invalid (should not be negative). Aborting thread start\n", adapter->core);
+		return 0;
+	}
 
 	for (i = 0; i < adapter->num_rx_queues; i++) {
 		adapter_dbg(DBG_NET, "Configuring queue %zu out of %d total\n", i, adapter->num_rx_queues);
@@ -954,8 +979,10 @@ int hpcap_launch_poll_threads(HW_ADAPTER * adapter)
 					HPRINTK(ERR, "Thread %zu could not be launched! Please restart the driver (and brace for a crash)", j);
 					return 0;
 				} else {
+					adapter_dbg(DBG_NET, "Thread %zu created, binding to core %zu and waking up...", j, adapter->core + core_count);
 					kthread_bind(bufp->consumer_threads[j], adapter->core + core_count);
 					wake_up_process(bufp->consumer_threads[j]);
+					adapter_dbg(DBG_NET, "Thread %zu should be up and running", j);
 				}
 
 				core_count++;

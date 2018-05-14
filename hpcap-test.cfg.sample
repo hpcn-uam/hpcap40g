@@ -82,7 +82,7 @@ generation_storage_rate_Mbps=8500
 test_small_buffer=true
 
 # The size of the buffer for small size tests, in megabytes.
-small_buffer_size_MB=256
+small_buffer_size_MB=32
 
 # Generation rate for the small buffer tests
 small_buffer_genrate_Mbps=6000
@@ -109,3 +109,6 @@ benchmark_framesizes="64 68 72 76 80 84 88 92 96 100 110 120 150 200 300 500 150
 
 # Throughput rates to test (in Mbps)
 benchmark_rates_Mbps="10000"
+
+# Rates for the duplicate capture benchmark
+benchmark_duplicate_rates="5 20 100 300 1000"

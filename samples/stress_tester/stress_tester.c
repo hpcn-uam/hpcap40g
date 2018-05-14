@@ -21,21 +21,6 @@ void signal_stop(int sig)
 	stop = 1;
 }
 
-static char* readable_fs(double size/*in bytes*/)
-{
-	int i = 0;
-	static char buf[1024];
-	const char* units[] = {"B", "kB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"};
-
-	while (size > 1024) {
-		size /= 1024;
-		i++;
-	}
-
-	sprintf(buf, "%.*f %s", i, size, units[i]);
-	return buf;
-}
-
 static short prepare_hpcap(int ifindex, int qindex, struct hpcap_handle* hp)
 {
 	int ret;
@@ -68,7 +53,6 @@ static short prepare_hpcap(int ifindex, int qindex, struct hpcap_handle* hp)
 int main(int argc, char **argv)
 {
 	struct hpcap_handle hp_1, hp_2;
-	int ret = 0;
 	int ifindex = 0, qindex = 0;
 	size_t total_rx = 0;
 

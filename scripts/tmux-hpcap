@@ -3,15 +3,33 @@
 # The shell argument, if existent, defines the directoryt in which HPCAP is placed. If not present, defaults  to HPCAP
 
 if [ -z "$1" ]; then
-	hpcap_dir="HPCAP"
+	hpcap_dir="$(dirname "${BASH_SOURCE[0]}")/../"
 else
 	hpcap_dir="$1"
 fi
 
+if [ ! -f "~/.tmux.conf" ]; then
+	cat > ~/.tmux.conf << EOF
+# 256 colors for vim
+set -g default-terminal "screen-256color"
+
+# Mouse works as expected
+is_older="[[ \$(tmux -V | cut -d' ' -f2) < 2.1 ]]"
+if-shell "\$is_older" "set -g mode-mouse on; set -g mouse-resize-pane on;\
+  set -g mouse-select-pane on; set -g mouse-select-window on" "set -g mouse on"
+
+#### Bindings
+bind -n C-s select-pane -l
+bind -n C-a resize-pane -Z
+bind -n C-w copy-mode
+EOF
+fi
+
+
 tmux new \; \
  split-window -h \; \
  split-window -v \; \
- send-keys "dmesg -wH" C-m \; \
+ send-keys "dmesg -wH || tail -f /var/log/kern.log" C-m \; \
  select-pane -t 1 \; \
  send-keys htop C-m \; \
  select-pane -t 0 \; \

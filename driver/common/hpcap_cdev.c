@@ -6,7 +6,9 @@
 #include "hpcap_cdev.h"
 #include "hpcap_vma.h"
 #include "hpcap_debug.h"
+#include "hpcap_sysfs.h"
 
+#include <linux/types.h>
 
 static struct file_operations hpcap_fops = {
 	.open = hpcap_open,
@@ -21,7 +23,6 @@ int hpcap_register_chardev(HW_ADAPTER *adapter, u64 size, u64 offset, int ifnum)
 	int i, ret = 0, major = 0;
 	dev_t dev = 0;
 	struct hpcap_buf *bufp = NULL;
-	size_t j;
 
 	major = HPCAP_MAJOR + adapter->bd_number;
 	DPRINTK(PROBE, INFO, "hpcap%d has %d rx queues.\n", adapter->bd_number, adapter->num_rx_queues);
@@ -94,12 +95,16 @@ void hpcap_unregister_chardev(HW_ADAPTER *adapter)
 	struct hpcap_buf *bufp;
 	dev_t dev;
 
+	adapter_dbg(DBG_NET, "Unregistering chardev for the adapter\n");
+
 	major = HPCAP_MAJOR + adapter->bd_number;
 	hpcap_stop_poll_threads(adapter);
 
+	adapter_dbg(DBG_NET, "Poll threads stoppped, removing queues.\n");
+
 	for (i = 0; i < adapter->num_rx_queues; i++) {
 		bufp = adapter->rx_ring[i]->bufp;
-		BPRINTK(INFO, "Unregistering buffer at ring %zu with address 0x%p", i, bufp);
+		BPRINTK(INFO, "Unregistering buffer at ring %d with address 0x%p", i, bufp);
 
 		if (bufp) {
 			if (hpcap_buf_clear(bufp) != 0)
@@ -126,6 +131,8 @@ static int _hpcap_set_private_data(struct file* filp, struct hpcap_buf* bufp, in
 	info->bufp = bufp;
 	info->handle_id = handle_id;
 	filp->private_data = info;
+
+	hpcap_get_listener(&bufp->lstnr, handle_id)->filp = filp;
 
 	return 0;
 }
@@ -261,11 +268,15 @@ long hpcap_ioctl(struct file * filp, unsigned int cmd, unsigned long arg2)
 	struct hpcap_listener_op lstop;
 	struct hpcap_buffer_info bufinfo;
 	struct hpcap_ioc_status_info status_info;
+	int arg_as_int = (int)(uintptr_t) arg;   // Just to avoid compiler warnings
 
 	if (!bufp) {
 		printk(KERN_ERR "HPCAP: ioctl-ing undefined char device\n");
 		return -1;
 	}
+
+	if (hpcap_is_listener_force_killed(&bufp->lstnr, hpcap_handleid_of(filp)))
+		return -EBADF; // Exit silently to avoid kernel log spam for calls of force-killed listeners.
 
 	bufp_dbg(DBG_IOCTL, "Ioctl from handle %llu, cmd %u\n", hpcap_handleid_of(filp), cmd);
 
@@ -396,6 +407,11 @@ long hpcap_ioctl(struct file * filp, unsigned int cmd, unsigned long arg2)
 
 			break;
 
+		case HPCAP_IOC_KILL_LST:
+			HPRINTK(WARNING, "Kill request for listener %d\n", arg_as_int);
+			ret = hpcap_kill_listener(&bufp->lstnr, arg_as_int);
+			break;
+
 		default:
 			HPRINTK(WARNING, "Unrecognized ioctl from handle %llu, cmd %u\n", hpcap_handleid_of(filp), cmd);
 			ret = -ENOTTY;
@@ -454,7 +470,7 @@ void hpcap_check_status(struct hpcap_buf * bufp, struct hpcap_ioc_status_info * 
 	struct task_struct *thread;
 
 	//Iterate over the adapters array
-	/* for (i = 0; i < adapters_found; i++) {
+	for (i = 0; i < adapters_found; i++) {
 		adapter = adapters[i];
 
 		if (adapter != NULL && is_hpcap_adapter(adapter)) {
@@ -473,7 +489,7 @@ void hpcap_check_status(struct hpcap_buf * bufp, struct hpcap_ioc_status_info * 
 				hpcap_adapters++;
 			}
 		}
-	} */
+	}
 
 	status_info->num_adapters = hpcap_adapters;
 
@@ -518,6 +534,7 @@ struct hpcap_ioc_status_info_listener hpcap_build_ioc_listener_from_hpcap_listen
 	listener.kill = (long)atomic_read(&original.kill);
 	listener.bufferWrOffset = original.bufferWrOffset;
 	listener.bufferRdOffset = original.bufferRdOffset;
+	listener.buffer_size = original.bufsz;
 
 	return listener;
 }

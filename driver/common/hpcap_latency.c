@@ -67,7 +67,7 @@ void hpcap_latency_measure(struct hpcap_latency_measurements* lm, struct timespe
 
 void hpcap_latency_print(struct hpcap_latency_measurements* lm, short reset)
 {
-	BPRINTK(INFO, "%zu frames: mean latency %lld ns sum %lld, stdev %lu ns (max %ld, min %ld)\n", lm->measurements, lm->mean, lm->mean_sum, int_sqrt(lm->variance), lm->max, lm->min);
+	BPRINTK(INFO, "%lld frames: mean latency %lld ns sum %lld, stdev %lu ns (max %lld, min %lld)\n", lm->measurements, lm->mean, lm->mean_sum, int_sqrt(lm->variance), lm->max, lm->min);
 
 	if (reset)
 		hpcap_latency_init(lm);

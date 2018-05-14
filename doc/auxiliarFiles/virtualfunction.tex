@@ -1,0 +1,40 @@
+% -*- root: ../HPCAP_DevGuide.tex -*-
+\chapter{Virtual functions}
+
+\section{i40e/XL710 virtual functions}
+
+The virtual function of the i40e driver can be activated by simply setting the number of desired VFs on a sysfs file with the command \texttt{echo N > /sys/class/net/enp5s0/device/sriov\_numvfs}, where \textit{N} is the number of VFs and \textit{enp5s0} should be replaced by the corresponding interface. The new PCI devices created can be seen with \texttt{lspci | grep Virtual}. Those devices can be directly assigned to KVM virtual machines (use virt-manager for an easy graphical interface). Note that you might need to unload the driver \textit{i40evf} in the machine if it is loaded automatically and bound to the virtual functions.
+
+\subsection{Running HPCAP on a virtual machine}
+
+Running HPCAP on the virtual machine is exactly the same as in a physical one, except for two issues that might prevent it from receiving packets and that need to be solved manually.
+
+The first issue is to set correctly the number of receive queues. Turns out that i40e, as of now (February 2018) does not allow/support virtual functions to change the number of RX queues. As HPCAP only uses one ring, it will bind to that first one and fully ignore the rest, leading to the strange situation where the packet counters are increasing and \textit{hpcap-status} shows the interface as receiving frames, but client applications do not read anything. One can confirm that the number of rings is indeed the issue by running \texttt{ethtool -l hpcapX} and seeing more than 1 ``combined'' ring or by seeing \textit{rx-N.packets} entries in the output of \texttt{ethtool -S hpcapX} with $N > 0$ (those lines are the packets received by the \textit{N}th ring).
+
+The \textbf{solution} is simple: before installing HPCAP and before assigning the VF to the virtual machine, change the number of queues of the device \textit{in the host machine} (not the guest) with \texttt{ethtool -L iface combined 1} (beware as all VFs are reset when doing this change) and then you can run the VM with the VFs assigned. There might be another way that doesn't require all VFs to have only one ring but I have not searched more. An alternative solution, in case that does not work, is to set the default number of queues to one by changing the macro \texttt{I40E\_DEFAULT\_QUEUES\_PER\_VF} in \textit{i40e.h} and recompiling the i40e driver.
+
+The second issue is the promiscuous mode. By default, VFs are not trusted and cannot enable a real promiscuous mode. This setting is easy to change: just run \texttt{ip link set dev iface vf N trust on} where \textit{N} is the index of the VF assigned to the VM running HPCAP. One might need to restart (\texttt{ifconfig hpcapX down \&\& ifconfig hpcap0 up promisc}) the interface in the guest machine for the promiscuous mode to be enabled (search in the kernel log both in guest and host machines for lines saying that the interface entered unicast and multicast promiscuous mode).
+
+\subsection{Port mirroring}
+
+The promiscuous mode defined above is only valid for data entering through the physical interface. In order to let HPCAP see the data sent and received by the virtual machines assigned to the VFs, one needs to enable port mirroring. This is a very poorly documented feature and appears to be only enabled starting from i40e 2.4.3 (older versions might not have it, I did not check all of them), so the steps written here are basically what I learned by reading the code and by trial-and-error.
+
+The procedure needs to be done on the host machine. First, locate the \textit{debugfs} interface for the physical device, that should be on the folder \textit{/sys/kernel/debug/i40e/PCIADDR} where \textit{PCIADDR} is the PCI address of the XL710 adapter. Inside that folder there should be two files, \textit{command} and \textit{netdev\_ops}. The first one is our input interface: we write commands there and \textit{i40e} writes the output to the kernel log (it is recommended to have another terminal running \texttt{dmesg -wH} so you can follow the output of the kernel log). You can run \texttt{echo > command} from the folder to see the available commands.
+
+In order to enable the mirroring, follow these steps (any `run command' instruction means writing the command to the file \textit{command} mentioned above):
+
+\begin{enumerate}
+	\item Dump the switch information by running \texttt{dump switch}. The output is a list of ``internal switches'' (I assume) with four fields: type, seid, uplink and downlink. The one that is interesting to us is SEID (switch ID, maybe), and I do not have any idea what the others represent.
+	\item Identify to which device do the SEIDs pertain. That is, run \texttt{dump vsi [seid]} and locate in the output either an interface name (search for \textit{netdev: name}), which means that SEID is related to that interface on the host machine, or search for a field \textit{VF ID} which indicates the index of the VF associated to that SEID.
+	\item Now that you know which SEID relates to which machine, you can run the commands \texttt{add switch ingress|egress mirror src-seid dst-seid} to add mirror rules for ingress/egress traffic from one switch to another. Search in the \textit{dmesg} output for a message saying that everything was good adding that rule (and note the ID for the rule in case you want to delete it, although in my experience deleted rules would continue to be executed so it's useless).
+	\item The previous step seems the logical one, but in my case it did not work as the driver said there was an error in the admin queue (error -53, which is just ``admin queue error''). What I found is that, by reasons unknown, the only SEID that the driver accepted as source SEID for the mirror rules was the SEID 160, which was the only one that appeared as type 17 and not type 19 when I ran \texttt{dump switch}. Enabling ingress or egress rules sends all traffic from the VFs to the destination SEID you set, so it appears there is no fine control over which VFs to monitor. Also, note that enabling both ingress and egress mirroring rules duplicates the packets.
+\end{enumerate}
+
+Also, apparently it seems that the HPCAP interface needs to be restarted (down/up cycle) for the mirroring to apply.
+
+Good luck.
+
+
+
+
+

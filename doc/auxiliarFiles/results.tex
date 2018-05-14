@@ -1,0 +1,27 @@
+\chapter{HPCAP performance results}
+
+This chapter collects several performance results of HPCAP, as a reference.
+
+\section{Reception without storage}
+
+\begin{figure}[hbtp]
+\centering
+\inputgnuplot{gnuplot/hpcapdd-nostorage}
+\caption{Performance results using hpcapdd without storing to disk.}
+\label{fig:hpcapdd-nostorage}
+\end{figure}
+
+As shown on \fref{fig:hpcapdd-nostorage}, without storing data to disk HPCAP supports line rate capture with only minimal losses (1.63 \%) on small frames (64 bytes). Tests were done in a system with an Intel Xeon E5-2650 v2 @ 2.60GHz.
+
+\section{Performance with duplicate detection}
+
+\begin{figure}[hbtp]
+\centering
+\inputgnuplot{gnuplot/duplicate-rates}
+\caption{Losses on duplicate detection scenario using hpcapdd without storing to disk.}
+\label{fig:duplicate-rates}
+\end{figure}
+
+The tests for duplicate detection were made on a Intel Xeon E5-2650 v2 @ 2.60GHz system. The system generated frames with duplicates that followed a Poisson random process with average $\lambda$ (see the file \fileobj{scripts/duplicate-frames.lua} for the code used to generate these with MoonGen). The frames were sent at maximum rate and the losses were recorded. It can be seen that the more duplicates there are, the less losses appear. However, they do not achieve the maximum HPCAP rate (that of \fref{fig:hpcapdd-nostorage}) at any point, even with duplicates appearing every 2 frames.
+
+The duplicate settings in this scenario were one single window with 32768, a length for duplicate checking of 70 bytes and 2 seconds of maximum time between duplicates.

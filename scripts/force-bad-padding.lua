@@ -2,12 +2,12 @@
 -- frame size.
 -- Usage: Moongen fixed-rate.lua port rate(Gbps) framesize
 
-local dpdk	= require "dpdk"
+local dpdk		= require "dpdk"
 local memory	= require "memory"
 local device	= require "device"
-local dpdkc	= require "dpdkc"
-
-local ffi	= require "ffi"
+local dpdkc		= require "dpdkc"
+local moongen 	= require "moongen"
+local ffi		= require "ffi"
 
 function master(txPort)
 	if not txPort then
@@ -27,10 +27,10 @@ function master(txPort)
 		queue:setRate(ratePerQueue)
 
 		-- Launch sender threads
-		dpdk.launchLua("loadSlave", txPort, q - 1)
+		moongen.startTask("loadSlave", txPort, q - 1)
 	end
 
-	dpdk.waitForSlaves()
+	moongen.waitForTasks()
 end
 
 function loadSlave(port, queue)
@@ -39,16 +39,12 @@ function loadSlave(port, queue)
 
 
 	-- Allocate a memory pool for the buffers
-	local mem = memory.createMemPool(function(buf)
-		local data = ffi.cast("uint8_t*", buf.pkt.data)
-		-- src/dst mac
-		for i = 0, 11 do
-			data[i] = 0xCA
-		end
-		-- eth type
-		data[12] = 0x12
-		data[13] = 0x34
-	end)
+	local mem = memory.createMemPool{n = 4096, func = function(buf)
+		buf:getEthernetPacket():fill{
+			ethSrc = queue,
+			ethDst = "10:11:12:13:14:15",
+		}
+	end}
 
 	local burst_size = 1082
 	local firstburst_batchcount = 1962
@@ -57,7 +53,7 @@ function loadSlave(port, queue)
 	local secondburst_batches = 4
 	local death_packet_size = 1008
 
-	local lastPrint = dpdk.getTime()
+	local lastPrint = moongen.getTime()
 	local totalSent = 0
 	local lastTotal = 0
 	local lastSent = 0
@@ -96,7 +92,7 @@ function loadSlave(port, queue)
 
 	printf("Death frame!!!! Sent %d buffers, infile %d", totalSent, in_file)
 
-	dpdk.sleepMillis(2000, true)
+	moongen.sleepMillis(2000, true)
 
 	totalSent = totalSent + queue:send(final_frame)
 	in_file = (burst_size + 12) * totalSent
@@ -104,9 +100,9 @@ function loadSlave(port, queue)
 	printf("Death frame 2!!!! Sent %d buffers, infile %d", totalSent, in_file)
 	printf("If the bug is still there, losses will appear in 2 seconds")
 
-	while dpdk.running() do
+	while moongen.running() do
 		totalSent = totalSent + queue:send(firstburst)
-		local time = dpdk.getTime()
+		local time = moongen.getTime()
 
 		if time - lastPrint > 1 then -- Update queue status each second
 			local mpps = (totalSent - lastTotal) / (time - lastPrint) / 10^6

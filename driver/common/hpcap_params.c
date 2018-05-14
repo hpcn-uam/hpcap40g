@@ -253,7 +253,7 @@ int hpcap_parse_opts(HW_ADAPTER* adapter)
 #if defined(HPCAP_IXGBE)
 		feature[RING_F_RXQ].indices = rxq;
 		*aflags |= IXGBE_FLAG_RSS_ENABLED;
-#elif defined(HPCAP_MLNX) || defined(HPCAP_I40E)
+#elif defined(HPCAP_40G)
 		adapter->num_rx_queues = rxq;
 #endif
 	}
@@ -337,7 +337,7 @@ int hpcap_parse_opts(HW_ADAPTER* adapter)
 
 #endif
 
-		adapter->core = core_param;
+		adapter->core = core_param > 0 ? core_param : 0;
 		BPRINTK(INFO, "PARAM: Adapter %u core = %d\n", adapter->bd_number, adapter->core);
 	}
 
@@ -439,8 +439,8 @@ int hpcap_parse_opts(HW_ADAPTER* adapter)
 		}
 
 #endif
-		adapter->dup_mode = dup_param;
-		BPRINTK(INFO, "PARAM: Adapter %u dup = %d\n", adapter->bd_number, adapter->dup_mode);
+		atomic_set(&adapter->dup_mode, dup_param);
+		BPRINTK(INFO, "PARAM: Adapter %u dup = %d\n", adapter->bd_number, dup_param);
 	}
 
 	{ /* Caplen assignment */
@@ -469,8 +469,8 @@ int hpcap_parse_opts(HW_ADAPTER* adapter)
 
 #endif
 
-		adapter->caplen = caplen_param;
-		BPRINTK(INFO, "PARAM: Adapter %u Caplen = %zu\n", adapter->bd_number, adapter->caplen);
+		atomic_set(&adapter->caplen, caplen_param);
+		BPRINTK(INFO, "PARAM: Adapter %u Caplen = %u\n", adapter->bd_number, caplen_param);
 	}
 
 	{ /* Pages assignment */

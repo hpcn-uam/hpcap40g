@@ -1,17 +1,34 @@
 #!/bin/bash
 
+function usage() {
+cat << EOF
+Usage: ${0##*/} [-h] [-d] [-a suffix]
+Start a benchmarking of the HPCAP driver
+
+Options:
+	-h: Show this help
+	-d: Enable testing sending different rates of duplicates
+	-a suffix: Suffix to identify the resulting benchmark file
+EOF
+}
+
+
 cd "$(dirname ${BASH_SOURCE[0]})"
 
 export PATH=./scripts:${PATH}:/sbin
 
-if [ "$1" = "-h" ]; then
-	echo "pending help"
-	exit 0
-elif [ -z "$1" ]; then
-	filename_appendix=""
-else
-	filename_appendix="-$1"
-fi
+OPTIND=1
+filename_appendix=""
+test_duplicates=false
+
+while getopts 'hda:' opt; do
+	case "$opt" in
+		h) usage; exit 0 ;;
+		d) test_duplicates=true ;;
+		a) filename_appendix="$OPTARG" ;;
+		'?') usage; exit 1;;
+	esac
+done
 
 # Load extra functions
 if ! source hpcap-lib.bash; then
@@ -84,7 +101,7 @@ fi
 
 logfile="/dev/stderr"
 date_ts=$(date +"%Y%m%d_%H%M")
-resultfile="benchmark-${date_ts}${filename_appendix}.dat"
+resultfile_basename="benchmark-${date_ts}${filename_appendix}"
 generator_out="/tmp/hpcap-benchmark-tmp"
 
 
@@ -110,6 +127,7 @@ log "Driver installed. Preparing test tools..."
 
 if [ "$generator_mode" = "moongen" ]; then
 	scp scripts/fixed-rate.lua ${generator_ssh_host}:MoonGen > /dev/null
+	scp scripts/duplicate-frames.lua ${generator_ssh_host}:MoonGen > /dev/null
 elif [ "$generator_mode" = "fpga" ] ; then
 	log "Using FPGA generator"
 elif [ "$generator_mode" = "hpcn_latency" ]; then
@@ -159,90 +177,132 @@ else
 	log "Running benchmarks without hpcapdd"
 fi
 
+if [ "$test_duplicates" != true ]; then
+	benchmark_duplicate_rates=0
+fi
+
 for framesize in $benchmark_framesizes; do
 	for rate_Mbps in $benchmark_rates_Mbps; do
-		base_losses=$(get_iface_losses $recv_iface)
-		base_rx=$(get_iface_rx_frames $recv_iface)
-		base_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+		for duprate in $benchmark_duplicate_rates; do
+			base_losses=$(get_iface_losses $recv_iface)
+			base_rx=$(get_iface_rx_frames $recv_iface)
+			base_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+			base_dupframes=$(get_ethtool_param $recv_iface "rx_hpcap_dup_frames")
 
-		log "Starting test for framesize ${framesize} at rate ${rate_Mbps}"
+			log "Starting test for framesize ${framesize} at rate ${rate_Mbps}"
 
-		# These functions (start_generator, stop_generator, etc, are defined in hpcap-lib.bash)
-		start_generator $rate_Mbps $framesize $generator_out
+			# These functions (start_generator, stop_generator, etc, are defined in hpcap-lib.bash)
+			if [ "$test_duplicates" = true ]; then
+				log "Generating with duplicates, average rate $duprate"
+				start_generator_with_duplicate $rate_Mbps $framesize $duprate $generator_out
+			else
+				start_generator $rate_Mbps $framesize $generator_out
+			fi
 
-		log "Waiting for test to complete ($generation_duration_seconds seconds)..."
+			log "Waiting for test to complete ($generation_duration_seconds seconds)..."
 
-		sleep $generation_duration_seconds
+			sleep $generation_duration_seconds
 
-		stop_generator
+			stop_generator
 
-		current_losses=$(get_iface_losses $recv_iface)
-		current_rx=$(get_iface_rx_frames $recv_iface)
-		current_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+			current_losses=$(get_iface_losses $recv_iface)
+			current_rx=$(get_iface_rx_frames $recv_iface)
+			current_port_rxdrop=$(get_ethtool_param $recv_iface "port.rx_dropped")
+			current_dupframes=$(get_ethtool_param $recv_iface "rx_hpcap_dup_frames")
 
-		losses=$(bc <<< "$current_losses - $base_losses")
-		rx=$(bc <<< "$current_rx - $base_rx")
-		port_rxdrop=$(bc <<< "$current_port_rxdrop - $base_port_rxdrop")
+			losses=$(bc <<< "$current_losses - $base_losses")
+			rx=$(bc <<< "$current_rx - $base_rx")
+			port_rxdrop=$(bc <<< "$current_port_rxdrop - $base_port_rxdrop")
+			dupframes=$(bc <<< "$current_dupframes - $base_dupframes")
 
-		if [ "$generator_mode" = "moongen" ]; then
-			# fixed-rate.lua outputs sent packets in the format
-			# 	END QN: Sent %d packets
-			# for each queue QN.
-			generated_frames=$(awk 'BEGIN { total = 0 } /END Q/ { total += $4 } END { print total }' $generator_out)
-			real_duration=$(awk '/Runtime/ { print $2 }' $generator_out)
-		elif [ "$generator_mode" =  "fpga" ]; then
-			readframes_cmd="cd $fpga_path; bin/readRegisters | grep '-Status: total packets' | awk '{print \$5}'"
-			generated_frames=$(ssh -t $generator_ssh_host "$readframes_cmd")
-			real_duration=$((generation_duration_seconds - 4)) # 4 seconds initialization. Estimation more or less.
-		elif [ "$generator_mode" = "hpcn_latency" ]; then
-			generated_frames=$(
-				grep "NIC TX port 0:" $generator_out | \
-				awk '{ if (NR > 1) print gensub(/\(([0-9]+).*/, "\\1", "g", $9) }' | \
-				awk 'BEGIN { total = 0 } { total += $1 } END { print total }'
-			)
-			real_duration=$(grep "NIC TX port 0:" $generator_out | awk 'BEGIN { total = 0 } { if (NR > 1) total += $20 } END { print total }')
-		fi
+			if [ "$generator_mode" = "moongen" ]; then
+				# fixed-rate.lua outputs sent packets in the format
+				# 	END QN: Sent %d packets
+				# for each queue QN.
+				generated_frames=$(awk 'BEGIN { total = 0 } /END Q/ { total += $4 } END { print total }' $generator_out)
+				real_duration=$(awk '/Runtime/ { print $2 }' $generator_out)
+			elif [ "$generator_mode" =  "fpga" ]; then
+				readframes_cmd="cd $fpga_path; bin/readRegisters | grep '-Status: total packets' | awk '{print \$5}'"
+				generated_frames=$(ssh -t $generator_ssh_host "$readframes_cmd")
+				real_duration=$((generation_duration_seconds - 4)) # 4 seconds initialization. Estimation more or less.
+			elif [ "$generator_mode" = "hpcn_latency" ]; then
+				generated_frames=$(
+					grep "NIC TX port 0:" $generator_out | \
+					awk '{ if (NR > 1) print gensub(/\(([0-9]+).*/, "\\1", "g", $9) }' | \
+					awk 'BEGIN { total = 0 } { total += $1 } END { print total }'
+				)
+				real_duration=$(grep "NIC TX port 0:" $generator_out | awk 'BEGIN { total = 0 } { if (NR > 1) total += $20 } END { print total }')
+			fi
 
-		log "Generated ${generated_frames} duration ${real_duration}"
+			log "Generated ${generated_frames} duration ${real_duration}"
 
-		tot_frames=$(bc <<< "$rx + $losses")
-		disappeared_frames=$(bc <<< "$generated_frames - $rx - $losses")
+			tot_frames=$(bc <<< "$rx + $losses + $dupframes")
+			disappeared_frames=$(bc <<< "$generated_frames - $tot_frames")
 
-		if [ $disappeared_frames -lt 0 ]; then
-			perc_difference=$(bc <<< "scale = 3; 100 * $tot_frames / $generated_frames")
-			log "Negative disappeared frames: Reception statistic is $perc_difference % of generated frames."
-			rx=$(bc <<< "100 * $rx / $perc_difference")
-			losses=$(bc <<< "100 * $losses / $perc_difference")
-			disappeared_frames=0;
-		fi
+			if [ $disappeared_frames -lt 0 ]; then
+				perc_difference=$(bc <<< "scale = 3; 100 * $tot_frames / $generated_frames")
+				log "Negative disappeared frames: Reception statistic is $perc_difference % of generated frames."
+				rx=$(bc <<< "100 * $rx / $perc_difference")
+				losses=$(bc <<< "100 * $losses / $perc_difference")
+				disappeared_frames=0;
+			fi
 
-		actual_rate_Mbps=$(echo "scale = 3; (8 * $generated_frames * $framesize / $real_duration) / 1000000" | bc)
-		capture_pct=$(echo "scale = 2; 100 * $rx / $generated_frames" | bc)
-		loss_pct=$(echo "scale = 2; 100 * $losses / $generated_frames" | bc)
-		portdrop_loss_pct=$(echo "scale = 2; 100 * $port_rxdrop / $losses" | bc)
-		portdrop_pct=$(echo "scale = 2; 100 * $port_rxdrop / $generated_frames" | bc)
+			actual_rate_Mbps=$(echo "scale = 3; (8 * $generated_frames * $framesize / $real_duration) / 1000000" | bc)
+			capture_pct=$(echo "scale = 2; 100 * $rx / $generated_frames" | bc)
+			loss_pct=$(echo "scale = 2; 100 * $losses / $generated_frames" | bc)
+			portdrop_pct=$(echo "scale = 2; 100 * $port_rxdrop / $generated_frames" | bc)
+			dupframes_pct=$(echo "scale = 2; 100 * $dupframes / $generated_frames" | bc)
 
-		log "At $rate_Mbps Mbps, size $framesize, $capture_pct % captured."
-		log "RX frames: $rx. Lost frames: $losses. Generated frames: $generated_frames"
-		log "Lost $loss_pct % frames, of which $portdrop_loss_pct % were from port.rx_dropped ($portdrop_pct % of the total)"
-		log "Actual transmission rate: $actual_rate_Mbps Mbps"
+			if [ $losses -eq 0 ]; then
+				portdrop_loss_pct=0
+			else
+				portdrop_loss_pct=$(echo "scale = 2; 100 * $port_rxdrop / $losses" | bc)
+			fi
 
-		if [ $disappeared_frames -ne 0 ]; then
-			log "Warning: $disappeared_frames frames were generated but not accounted for as lost or received."
-		fi
+			log "At $rate_Mbps Mbps, size $framesize, $capture_pct % captured."
+			log "RX frames: $rx. Lost frames: $losses. Generated frames: $generated_frames"
+			log "Lost $loss_pct % frames, of which $portdrop_loss_pct % were from port.rx_dropped ($portdrop_pct % of the total)"
+			log "Actual transmission rate: $actual_rate_Mbps Mbps"
 
-		echo "$rate_Mbps $framesize $real_duration $actual_rate_Mbps $generated_frames $rx $losses $capture_pct $disappeared_frames $loss_pct $port_rxdrop $portdrop_pct" >> $resultfile
+			if [ $disappeared_frames -ne 0 ]; then
+				log "Warning: $disappeared_frames frames were generated but not accounted for as lost or received."
+			fi
+
+			if [ "$test_duplicates" = true ]; then
+				log "Duplicate frames removed: $dupframes ($dupframes_pct %)"
+				resultfile="${resultfile_basename}_duprate${duprate}.dat"
+			else
+				resultfile="${resultfile_basename}.dat"
+			fi
+
+			echo "$rate_Mbps $framesize $real_duration $actual_rate_Mbps " \
+				 "$generated_frames $rx $losses $capture_pct $disappeared_frames " \
+				 "$loss_pct $port_rxdrop $portdrop_pct $dupframes $dupframes_pct" \
+				 >> $resultfile
+		done
 	done
 done
 
 kill -TERM $hpcapdd_pid &> /dev/null
 
-log "Benchmark end. See $resultfile for results"
-log "Resultfile columns: 1-Rate 2-Framesize 3-Duration(seconds) 4-ActualTrafficRate 5-GeneratedFrames 6-ReceivedFrames 7-LostFrames 8-CapturePercentage 9-DisappearedFrames 10-LossPctg 11-Port_RxDropped 12-Port_RxDroppePctg"
+log "Benchmark end. See $resultfile_basename for results"
+log "Resultfile columns: 1-Rate 2-Framesize 3-Duration(seconds)" \
+	"4-ActualTrafficRate 5-GeneratedFrames 6-ReceivedFrames 7-LostFrames" \
+	"8-CapturePercentage 9-DisappearedFrames 10-LossPctg 11-Port_RxDropped" \
+	"12-Port_RxDroppedPctg 13-DuplicateFrames 14-DuplicateFramesPctg"
 
 if which gnuplot &>/dev/null; then
-	graphout="benchmark-${date_ts}${filename_appendix}.png"
-	log "Generating result graph"
-	gnuplot -e "fin='$resultfile';fout='$graphout'" scripts/benchmark.gpi
-	log "Graph output in $graphout"
+	for duprate in $benchmark_duplicate_rates; do
+		if [ "$test_duplicates" = true ]; then
+			resultfile="${resultfile_basename}_duprate${duprate}.dat"
+			graphout="${resultfile_basename}_duprate${duprate}.png"
+		else
+			resultfile="${resultfile_basename}.dat"
+			graphout="${resultfile_basename}.png"
+		fi
+
+		log "Generating result graph"
+		gnuplot -e "fin='$resultfile';fout='$graphout'" scripts/benchmark.gpi
+		log "Graph output in $graphout"
+	done
 fi

@@ -2,17 +2,26 @@
 
 # A simple script to retrieve the accumulated changelog of the IXGBE driver from a certain version
 # onwards.
+# Receives two arguments, the major and minor version of the current driver.
 
-versions=$(curl -s http://sourceforge.net/projects/e1000/files/ixgbe%20stable/ |
+if [ -z $1 ] || [ -z $2 ] || [ -z $3 ]; then
+	echo "usage: ixgbe_changelog major minor release"
+	echo "With the version numbers of the minimum version get changelog"
+	exit
+fi
+
+versions=$(curl -Ls http://sourceforge.net/projects/e1000/files/ixgbe%20stable/ |
 	grep 'projects/e1000/files/ixgbe%20stable/[0-9.]\+/"' |
 	awk -v FS=/ '{print $6}' |
 	awk -v FS=. "\$1 > $1 || (\$1 == $1 && \$2 > $2) || (\$1 == $1 && \$2 == $2 && \$3 > $3) { print }")
+
+echo "Versions are $versions"
 
 for ver in $versions; do
 	url="http://sourceforge.net/projects/e1000/files/ixgbe%20stable/$ver/"
 
 	echo "Changes for version $ver"
-	curl -s $url |
+	curl -Ls $url |
 		awk '/<div class="content format-plaintext">/{flag=1;next}/<\/div>/{flag=0}flag' |
 		grep '[-*]' |
 		sed -E 's/^[[:space:]]*/ /g' |

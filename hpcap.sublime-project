@@ -1,0 +1,68 @@
+{
+	"SublimeLinter":
+	{
+		"linters":
+		{
+			"clang":
+			{
+				"extra_flags": "-Wall -I${project_folder}/include  -I${project_folder}/driver/common",
+				"include_dirs":
+				[
+					"${project_folder}/include",
+					"${project_folder}/driver/common"
+				]
+			}
+		}
+	},
+	"build_systems":
+	[
+		{
+			"file_regex": "^[ ]*File \"(...*?)\", line ([0-9]*)",
+			"name": "Anaconda Python Builder",
+			"selector": "source.python",
+			"shell_cmd": "\"python\" -u \"$file\""
+		}
+	],
+	"folders":
+	[
+		{
+			"folder_exclude_patterns":
+			[
+				"doc",
+				"obj",
+				"bin"
+			],
+			"path": "./"
+		}
+	],
+	"settings":
+	{
+		"AStyleFormatter":
+		{
+			"autoformat_on_save": true,
+			"options_c":
+			{
+				"additional_options_file": "${project_path}/.astylerc",
+				"use_only_additional_options": true
+			}
+		},
+		"ecc_common_flags":
+		[
+			"-I/usr/include",
+			"-I$project_base_path/src",
+			"-I$project_base_path/includes",
+			"-I$project_base_path/include",
+			"-I$project_base_path/driver/common",
+			"-I/usr/lib/clang/$clang_version/include",
+			"-I/opt/local/include"
+		],
+		"sublimeclang_options":
+		[
+			"-I${project_path}/include",
+			"-I${project_path}/driver/common",
+			"-Wall",
+			"-pedantic",
+			"-std=c99"
+		]
+	}
+}

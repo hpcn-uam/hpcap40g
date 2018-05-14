@@ -5,7 +5,7 @@
 \title{HPCAP}
 \subtitle{Developer guide}
 \author{Guillermo Juli\'an Moreno}
-\authormail{guillermo.julian@estudiante.uam.es}
+\authormail{guillermo.julian@naudit.es}
 \date{\today}
 
 \settocdepth{subsubsection}
@@ -199,6 +199,7 @@ To serve as an introduction to the driver, we explain how does it work from the 
 \end{enumerate}
 \item After the module has been initialized, Linux wakes up the network interfaces, calling \codeobj{ixgbe\_open}. IXGBE prepares its private configuration, and then calls \codeobj{hpcap\_launch\_poll\_threads} if the interface is in HPCAP mode. This functions ensures that the interface is named correctly (see the corresponding bug description in \fref{sec:bugs:IfaceRenaming}) and then launches the RX poll thread. This thread just copies the new buffers from the NIC ring to the internal HPCAP buffer (see \fref{fig:DriverArch}) if there is a listener. See the ssubsection below for a description of traffic reception.
 \item If there are hugepages configured, the \textit{install\_hpcap.bash} scripts allocates and registers them with the system. See \fref{sec:Hugepages}.
+\item Some parameters can be changed while HPCAP is running. This is done using \textit{change-config.sh} script, which utilizes the \texttt{sysfs} file system. To add new parameters to be hot-swapped, a new attribute must be created in \texttt{hpcap\_sysfs.c}, with its corresponding show/store functions. It must be included in the \texttt{hpcap\_sysfs\_init} and \texttt{hpcap\_sysfs\_exit} function. In addition to this, the \textit{change-config.sh} script must also be modified to include this new options.
 \end{enumerate}
 
 \subsection{Traffic reception - kernel side}
@@ -502,6 +503,8 @@ The NIC fills several registers with different statistics regarding the adapter 
 
 The \texttt{TQSM[n]} register should be used to retrieve the wanted statistic from the correct register. For example, the \codeobj{RXMPC[n]} register (section 8.2.3.23.4, page 674 on the datasheet) shows the missed packet count for \texttt{n=0-7}. The queues will store on one of those 8 registers the missed packet count depending on the mapping configuration.
 
+\input{auxiliarFiles/virtualfunction.tex}
+
 \chapter{User-space applications}
 
 \section{Samples}
@@ -525,6 +528,12 @@ To allow fast checking of the integrity of generated RAW files, the \fileobj{che
 Optionally, the program can receive a minimum timestamp with \textit{-t timestamp}. If it encounters files with an older timestamp, it will ignore them.
 
 \textit{checkraw} will output warnings and/or errors found in the RAW captures. If errors are found, they are printed together with the human-readable timestamp, to allow for easy identification.
+
+\subsection{killblocked}
+
+This application, when run, detects any blocked listener on the given HPCAP interface, and kills it. That implies setting the \texttt{kill} variable to 1 in the internal HPCAP driver structures, stopping any busy loop on that listener; and also closing the file descriptor.
+
+\textit{Warning}: Using this might cause instability in the client application being closed, as it probably does not account for the case where the HPCAP file descriptor is closed forcefully from the driver. Use under your own responsibility.
 
 \section{Libraries}
 \label{sec:libs}
@@ -591,6 +600,38 @@ To improve the clarity in the \textit{Makefile}, some functions have been placed
 \fileobj{generate\_modprobe\_conf} just generates a simple configuration file for \sysobj{modprobe}. For each driver, generates two lines \textit{install} and \textit{remove} that will make modprobe to call the helper scripts described in \fref{sec:scripts:modprobe}. This script also generates \textit{blacklist} lines to indicate the system that the \textit{ixgbe} and \textit{hpcap} drivers should not be loaded at boot automatically, thus avoiding conflicts that could result in nasty bugs such as the one in \fref{sec:bugs:drivercorrupt}.
 
 The Makefile will generate this configuration file when installing the driver to the system (see \fref{sec:install}).
+
+\input{auxiliarFiles/results.tex}
+
+\chapter{Development procedures}
+
+This chapter covers several procedures during development that might be repeated more than once, and that are tricky enough to warrant writing them down and listing common \textit{gotchas}.
+
+\section{\textit{ixgbe} update procedure}
+
+The base \textit{ixgbe} driver might need to be updated with a certain frequency, either to update compatibility with newer kernels or to support new NICs. The update procedure is, at its base, simple: download the last version of the driver from \url{https://sourceforge.net/projects/e1000/files/ixgbe%20stable/}, uncompress it in the \textit{driver} folder and rename the \textit{ixgbe-x.x.x} name to \textit{hpcap\_ixgbe-x.x.x} (naming is important, ensure also that the folder inside that one, the one containing the code, is named \textit{driver} and not \textit{src} or any other thing, or else the Makefile will not detect it and will not build the new driver).
+
+After that, one has to ``plug'' HPCAP again by copying the modified regions in the previous version of the driver, those that are surrounded by a \texttt{\#define DEV\_HPCAP}. However, it is not difficult to miss some parts and therefore below are the parts of the \textit{ixgbe} that need to be modified and, if known, the failures they make if they are not inserted in the new driver.
+
+\begin{itemize}
+	\item \textbf{Type, function and macro definitions \fileobj{ixgbe.h}}. Includes the header files from HPCAP, some functions declaration, the macros for the DMA windows and modifications to ixgbe structures such as \codeobj{ixgbe\_ring} and \codeobj{ixgbe\_adapter}. The code tends to stop compiling if they are not included, so it is difficult to miss these.
+	\item \textbf{Ring size settings in \fileobj{ixgbe.h}}. The \codeobj{IXGBE\_DEFAULT\_RXD} macro defining the default number of descriptors in the RX ring needs to be increased to be maximum value, 4096. Not changing this will decrease the performance of HPCAP.
+	\item \textbf{Changing the driver version information in \fileobj{ixgbe\_main.c}}. If missed, the only difference is that the HPCAP driver will not have information of the version nor features included. Not essential but nice to have.
+	\item \textbf{Disabling the TX timeouts on HPCAP interfaces in \fileobj{ixgbe\_main.c}}. Basically, adding the call to return immediately off \codeobj{ixgbe\_tx\_timeout}, \codeobj{ixgbe\_watchdog\_flush\_tx} and \codeobj{ixgbe\_xmit\_frame\_ring} on HPCAP interfaces. If not included, some scary warnings and stack traces will appear in the kernel log during operation, although they don't have any effect.
+	\item \textbf{Add HPCAP specific functions for allocation and dispatching of descriptors in \fileobj{ixgbe\_main.c}}. These encompass changing several functions of the type \codeobj{alloc/clean\_rx\_buffers}, and are basically for compatibility with HPCAP dispatching of descriptors.
+	\item \textbf{Naming change from \codeobj{RING\_F\_RSS} to \codeobj{RING\_F\_RXQ} on several files}. Forgetting to change this implies compilation errors which are easy to solve.
+	\item \textbf{Storing references to the adapter in the RX/TX rings in \fileobj{ixgbe\_main.c}}. Before the configuration of rx/tx rings with \codeobj{ixgbe\_configure\_rx\_ring}, the reference to the adapter must be saved in the ring structure. Not adding this will most probably cause a segmentation fault when the driver loads into memory and tries to read an uninitialized pointer.
+	\item \textbf{Launching and stopping HPCAP poll threads in \fileobj{ixgbe\_main.c}}. Just at the end of \codeobj{ixgbe\_up\_complete}, the HPCAP polling threads should be launched on the HPCAP adapter. Not changing this is easily detectable, as HPCAP will not have any threads hogging CPU and no traffic will be received. Similarly, one should stop the threads first when \codeobj{ixgbe\_down} is called. This is more relevant: if they are not stopped, the system could crash/behave weirdly when having these threads running on their own.
+	\item \textbf{Allocation of descriptors in \fileobj{ixgbe\_main.c}}. On \codeobj{ixgbe\_setup\_rx\_resources}, the DMA regions for the frames must be preallocated. Not doing this will probably cause a crash. Correspondingly, the function for freeing them, \codeobj{ixgbe\_free\_rx\_resources} should be modified too.
+	\item \textbf{Fixing interface numbers in \fileobj{ixgeb\_main.c}}. In the \codeobj{ixgbe\_probe} function the interface numebrs should be fixed to avoid interfaces changing name after a reboot.
+	\item \textbf{Distable advanced features in \fileobj{ixgeb\_main.c}}. In the \codeobj{ixgbe\_probe} function, advanced features of the card should be disabled to avoid performance hits.
+	\item \textbf{Correct naming of the interface in \fileobj{ixgbe\_main.c}}. Again in \codeobj{ixgbe\_probe}, the interface should be named correctly or else it will not appear.
+	\item \textbf{Register/unregister of adapters in \fileobj{ixgbe\_main.c}}. For registering. For unregistering, the function \codeobj{hpcap\_unregister\_chardev} should be called in \codeobj{ixgbe\_remove}.
+	\item \textbf{HPCAP initialization in \fileobj{ixgbe\_main.c}}. In \codeobj{ixgbe\_init\_module}, HPCAP needs to setup the options and fix the iface numbers. In that same function, after having called \codeobj{pci\_register\_driver}, the \codeobj{hpcap\_register\_adapters} function should be called to configure the HPCAP part of all interfaces.
+	\item \textbf{HPCAP custom stats in \fileobj{ixgbe\_ethtool.c}}. THey should be added to the \codeobj{ixgbe\_gstrings\_stats} array. If they are not the code will most probably stop compiling.
+	\item \textbf{Fix number of MSIx vectors in \fileobj{ixgbe\_lib.c}}. In \codeobj{ixgbe\_acquire\_msix\_vectors}, ignore the TX queues in HPCAP adapters.
+	\item \textbf{Add HPCAP parameters in \fileobj{ixgbe\_param.c}}. Include the HPCAP parameter files to define the corresponding command-line parameters. If not included, the code will not compile.
+\end{itemize}
 
 \printindex
 

@@ -20,8 +20,12 @@
 #define PFX "ixgbevf: "
 #elif defined(HPCAP_MLNX)
 #define PFX "mlnx: "
+#elif defined(HPCAP_I40E)
+#define PFX "i40e: "
+#elif defined(HPCAP_I40EVF)
+#define PFX "i40evf: "
 #else
-#define PFX
+#define PX "hpcap???: "
 #endif
 
 /* Some definitions to control what gets out in debugging statements */

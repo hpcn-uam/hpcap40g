@@ -205,7 +205,6 @@ static int _hpcap_do_listener_op(struct hpcap_handle* handle, size_t expect_byte
 {
 	struct hpcap_listener_op lstop;
 	int ret;
-	size_t new_bytes;
 
 	if (do_ack && handle->acks > 0)
 		lstop.ack_bytes = handle->acks;
@@ -223,14 +222,19 @@ static int _hpcap_do_listener_op(struct hpcap_handle* handle, size_t expect_byte
 	//	printdbg("lstop result: avail %llu, rdoff %llu\n", lstop.available_bytes, lstop.read_offset);
 
 	if (ret < 0) {
-		perror("ioctl");
+		perror("lstop ioctl");
+
+		if (errno == EBADF) {
+			fprintf(stderr, "HPCAP client was force killed. Aborting.\n");
+			abort();
+		}
+
 		return HPCAP_ERR;
 	}
 
 	if (do_ack) {
 		if (handle->avail < handle->acks) {
-			printerr("Trying to acknowledge more bytes than available (avail = %zu, acks = %zu)\n", handle->avail, handle->acks);
-			printerr("This is a fatal error. Aborting from libhpcap.\n");
+			printerr("FATAL: Trying to acknowledge more bytes than available (avail = %zu, acks = %zu). Aborting.\n", handle->avail, handle->acks);
 			abort();
 		}
 
@@ -309,6 +313,33 @@ int hpcap_ioc_killwait(struct hpcap_handle *handle)
 	return ret < 0 ? HPCAP_ERR : HPCAP_OK;
 }
 
+int hpcap_ioc_kill(struct hpcap_handle* handle, int listener_id)
+{
+	return ioctl(handle->fd, HPCAP_IOC_KILL_LST, listener_id);
+}
+
+int hpcap_status_info(struct hpcap_handle* handle, struct hpcap_ioc_status_info* info)
+{
+	int ret = ioctl(handle->fd, HPCAP_IOC_STATUS_INFO, info);
+
+	return ret < 0 ? HPCAP_ERR : HPCAP_OK;
+}
+
+size_t hpcap_ioc_listener_info_available_bytes(struct hpcap_ioc_status_info_listener* l)
+{
+	if (l->bufferRdOffset <= l->bufferWrOffset)
+		return l->bufferWrOffset - l->bufferRdOffset;
+	else
+		return (l->buffer_size - l->bufferRdOffset) + l->bufferWrOffset;
+}
+
+double hpcap_ioc_listener_occupation(struct hpcap_ioc_status_info_listener* l)
+{
+	size_t available_bytes = hpcap_ioc_listener_info_available_bytes(l);
+
+	return ((double)(l->buffer_size - available_bytes)) / l->buffer_size;
+}
+
 #ifdef REMOVE_DUPS
 int hpcap_dup_table(struct hpcap_handle *handle)
 {
@@ -336,18 +367,19 @@ int hpcap_dup_table(struct hpcap_handle *handle)
 }
 #endif
 
-inline void hpcap_pcap_header_ns(void *header, u32 secs, u32 nsecs, u16 len, u16 caplen)
-{
-	struct pcap_pkthdr *head = (struct pcap_pkthdr *) header;
-	head->ts.tv_sec = secs;
-	head->ts.tv_usec = nsecs;
-	head->caplen = caplen;
-	head->len = len;
-}
-
 inline void hpcap_pcap_header(void *header, u32 secs, u32 nsecs, u16 len, u16 caplen)
 {
 	struct pcap_pkthdr *head = (struct pcap_pkthdr *) header;
+
+	head->ts.tv_sec = secs;
+	head->ts.tv_usec = nsecs / 1000; //noseconds to useconds
+	head->caplen = caplen;
+	head->len = len;
+}
+inline void hpcap_pcap_header_ns(void *header, u32 secs, u32 nsecs, u16 len, u16 caplen)
+{
+	struct pcap_pkthdr *head = (struct pcap_pkthdr *) header;
+
 	head->ts.tv_sec = secs;
 	head->ts.tv_usec = nsecs;
 	head->caplen = caplen;
@@ -448,7 +480,7 @@ uint64_t hpcap_read_packet(struct hpcap_handle *handle, u_char **pbuffer, u_char
 	} while (has_padding && handle->avail >= (handle->acks + acks + RAW_HLEN));
 
 	if (has_padding && handle->avail < (handle->acks + acks + RAW_HLEN)) {
-		printerr("No more space\n");
+		printerr("No more space at %p for %zu acks + padding\n", auxbuf, acks);
 		*pbuffer = NULL;
 		abort();
 		return 0;

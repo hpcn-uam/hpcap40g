@@ -38,10 +38,10 @@
 \title{HPCAP}
 \subtitle{User Guide}
 \author{V\'ictor Moreno Mart\'inez \and Guillermo Juli\'an Moreno}
-\authormail{victor.moreno@uam.es, guillermo.julian@estudiante.uam.es\footnote{Current maintainer.}}
+\authormail{victor.moreno@uam.es, guillermo.julian@naudit.es\footnote{Current maintainer.}}
 \date{\today}
 
-\newcommand{\supportedkernels}{2.6.32, 3.2.0, 3.5.3, 3.11.0, 3.13.0, 3.14.7, 3.15.0, 3.19.0}
+\newcommand{\supportedkernels}{2.6.32, 3.2.0, 3.5.3, 3.11.0, 3.13.0, 3.14.7, 3.15.0, 3.19.0, 4.4.0, 4.8.0}
 
 \begin{document}
 
@@ -83,6 +83,7 @@ This section shows how to install HPCAP in your system. We will assume you alrea
 \item Install the required packages:
 \begin{description}
 \item[CentOS]: \textit{yum install libpcap-devel numactl numactl-devel}
+\item[Ubuntu]: \textit{apt-get install libpcap-dev libnuma-dev}
 \end{description}
 
 \item Configure your installation. The easiest way is to run \texttt{scripts/gen-hpcap-config params.cfg}, that will ask you some basic questions and will generate a basic configuration file, including the core assignments based on your NUMA topology.
@@ -262,6 +263,16 @@ Here you can find a list with parameters you must make sure to have properly con
 \textbf{Warning:} changing any of the above mentioned parameters will take no effect until the driver is re-installed.
 
 Once all the configuration parameters have been properly set, the execution of the script \texttt{install\_hpcap.bash} will take charge of all the installation steps that need to be made in order to install the HPCAP driver.
+
+\subsection{Hot swapping parameters}
+\label{sec:Params:HotSwapping}
+
+Some HPCAP parameters can be changed while it is running. It can be done using the script \texttt{change-config.sh} under the directory \texttt{scripts} with several parameters.
+
+The currently implemented functionality includes:
+\begin{itemize}
+    \item \texttt{+dups/-dups}: Enables (+) or disables (-) duplicate removal.
+\end{itemize}
 
 \section{Interface naming and numbering}
 \label{sec:InterfaceNaming}
@@ -592,6 +603,8 @@ When developing for the HPCAP API, you must have some details in mind:
     Check the kernel log. If it says something similar to \textit{hpcap: Unknown symbol vxlan\_get\_rx\_port (err 0)} try running \texttt{modprobe vxlan} before installing.
 
 \input{auxiliarFiles/weirdbugs.tex}
+
+\input{auxiliarFiles/results.tex}
 
 \appendix
 \chapter{Configuration example}

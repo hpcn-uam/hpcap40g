@@ -156,6 +156,20 @@ void hpcap_print_listener_status(struct hpcap_listener* list);
 
 void hpcap_global_listener_reset_offset(struct hpcap_buffer_listeners* lstnr);
 
+/**
+ * Kill and delete the listener with the given ID.
+ * @param  lstnr Listener ID structure.
+ * @param  id    Id of the listener.
+ * @return       0 if OK, -EIDRM if there wasn't any listener with that ID.
+ */
+int hpcap_kill_listener(struct hpcap_buffer_listeners* lstnr, int id);
+
+/**
+ * Return whether a listener with the given ID has been force killed before.
+ * Useful for silent ignoring of ioctl calls from those killed listeners.
+ */
+int hpcap_is_listener_force_killed(struct hpcap_buffer_listeners* lstnr, int id);
+
 /** @} */
 
 #endif

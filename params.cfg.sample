@@ -107,7 +107,7 @@ caplen3=0;
 ###################
 # Number of pages for each interfaces's kernel buffer
 # Total amount of pages: HPCAP_BUF_SIZE/PAGESIZE
-#		echo $(( $(( $(cat include/hpcap.h | grep HPCAP_BUF_SIZE | tail -n 1 | awk '{print $4}' | tr -d "ul") )) / $(getconf PAGESIZE) ))
+#		echo $(( $(( $(cat /home/naudit/HPCAP4/include/hpcap.h | grep HPCAP_BUF_SIZE | tail -n 1 | awk '{print $4}' | tr -d "ul") )) / $(getconf PAGESIZE) ))
 # The minimal value for an interface in hpcap mode is 1
 #
 # E.g.:

@@ -3,11 +3,14 @@
 cd "$(dirname ${BASH_SOURCE[0]})"
 
 export PATH=${PATH}:/sbin:./scripts
+verbose=0
 
 if [ "$1" = "-h" ]; then
 	echo "hpcap-status: Script for easy monitoring of the HPCAP driver status."
 	echo "usage: hpcap-status"
 	exit 0
+elif [ "$1" = "-v" ]; then
+	verbose=1;
 fi
 
 if ! source hpcap-lib.bash; then
@@ -22,11 +25,11 @@ fi
 # parameters file is placed in prefix/etc/hpcap/params.cfg.
 
 if [ -e ./../../etc/hpcap/params.cfg ]; then
-	paramfile=./../../etc/hpcap/params.cfg
-	logdir=$(read_value_param monitor_basedir)
+	export paramfile=./../../etc/hpcap/params.cfg
+	export logdir=$(read_value_param monitor_basedir)
 elif [ -e ./../params.cfg ]; then
-	paramfile=./../params.cfg
-	logdir=./../data
+	export paramfile=./../params.cfg
+	export logdir=./../data
 else
 	die "Parameter file (params.cfg) not found at ./../params.cfg nor ./../../etc/hpcap/params.cfg."
 fi
@@ -35,7 +38,7 @@ fi
 function refresh_ethtool()
 {
 	local interface=$1
-	ethtool_output=$(ethtool -S $interface 2>/dev/null)
+	ethtool_output=$(ethtool -S "$interface" 2>/dev/null)
 }
 
 function get_ethtool_param()
@@ -43,9 +46,15 @@ function get_ethtool_param()
 	local param=$1
 
 	# Returns 0 if the parameter name is not found.
-	echo "$ethtool_output" | (grep $param || echo "0 0") | head -n 1 | awk '{print $2}'
+	echo "$ethtool_output" | (grep "$param" || echo "0 0") | head -n 1 | awk '{print $2}'
 }
 
+function has_ethtool_param()
+{
+	local param="$1"
+
+	echo "$ethtool_output" | grep "$param" &> /dev/null
+}
 
 monitor_interval=$(read_value_param monitor_interval)
 ifs_all=$(read_value_param ifs)
@@ -55,14 +64,26 @@ initial_rx=""
 initial_no_loss=""
 initial_client_loss=""
 initial_client_discard=""
+initial_removed_dups=""
+has_duplicate_removal=false
+term_cols=$(tput cols)
+term_rows=$(tput lines)
 
 for iface in $ifs_all; do
+	initial_tstamp=$(date +%s.%N)
 	if echo $iface | grep "hpcap" &> /dev/null; then
 		ifs="$ifs $iface"
-		initial_losses="$initial_losses $(get_ethtool_param $iface rx_dropped:)"
-		initial_rx="$initial_rx $(get_ethtool_param $iface rx_bytes:)"
-		initial_client_loss="$initial_client_loss $(get_ethtool_param $iface rx_hpcap_client_lost_frames:)"
-		initial_client_discard="$initial_client_discard $(get_ethtool_param $iface rx_hpcap_noclient_frames:)"
+		refresh_ethtool $iface
+		initial_losses="$initial_losses $(get_ethtool_param rx_missed_errors:)"
+		initial_rx="$initial_rx $(get_ethtool_param rx_bytes:)"
+		initial_rxframes="$initial_rxframes $(get_ethtool_param rx_packets:)"
+		initial_client_loss="$initial_client_loss $(get_ethtool_param rx_hpcap_client_lost_frames:)"
+		initial_client_discard="$initial_client_discard $(get_ethtool_param rx_hpcap_noclient_frames:)"
+		initial_removed_dups="$initial_removed_dups $(get_ethtool_param rx_hpcap_dup_frames:)"
+
+		if has_ethtool_param rx_hpcap_dup_frames: ; then
+			has_duplicate_removal=true
+		fi
 
 		outdir=$logdir/$(date +%Y-%V)
 		outfile=$outdir/$iface
@@ -76,21 +97,41 @@ for iface in $ifs_all; do
 	fi
 done
 
+prev_driver_status=""
 
 ( while [ 1 ]; do
 	outdir=$logdir/$(date +%Y-%V)
 	outfile=$outdir/$iface
-	echo "clear" # This tells the AWK script to clear the screen.
+	if lsmod | grep "hpcap" &> /dev/null; then
+		driver_status="installed"
+	else
+		driver_status="uninstalled"
+	fi
+
+	new_cols=$(tput cols)
+	new_rows=$(tput lines)
+
+	if [ ! -z "$prev_driver_status" ] && [ "$prev_driver_status" != "$driver_status" ]; then
+		echo "hardclear" # Force a clear of the screen now, to avoid mess-ups with new lines
+	elif [ "$new_cols" != "$term_cols" ] || [ "$new_rows" != "$term_rows" ]; then
+		echo "hardclear" # Same: Force clear when changing term size
+	else
+		echo "clear" # This tells the AWK script to clear the screen.
+	fi
+
+	term_cols=$new_cols
+	term_rows=$new_rows
+
+	prev_driver_status="$driver_status"
 
 	echo "- $(date)"
 	echo -n "- "; hp_info # Lines beginning with '-' are printed verbatim in the AWK script
 
-	if lsmod | grep "hpcap" &> /dev/null; then
+	if [ $driver_status = "installed" ]; then
 		echo "- HPCAP driver installed       "  # Extra spaces to overwrite with blanks.
 	else
 		echo "- HPCAP driver ${tbold}not${treset} installed"
 	fi
-
 
 	disabled_monitors=""
 
@@ -100,15 +141,24 @@ done
 		fi
 	done
 
+	if [ "$verbose" == 1 ]; then
+		echo "- Available interfaces: $ifs"
+	fi
+
 	if [ ! -z "$disabled_monitors" ]; then
 		echoy "- Monitors not running on interfaces: $disabled_monitors"
+	fi
+
+	if [ "$has_duplicate_removal" = "true" ]; then
+		echo "- Duplicate removal enabled"
 	fi
 
 	ifaceStats=""
 
 	for iface in $ifs; do
-		refresh_ethtool $iface
-		if has_link $iface; then
+		refresh_ethtool "$iface"
+		tstamp=$(date +%s.%N)
+		if has_link "$iface"; then
 			link="1"
 		else
 			link="0"
@@ -117,15 +167,22 @@ done
 		rx_errors="$(get_ethtool_param rx_errors:)"
 		client_loss="$(get_ethtool_param rx_hpcap_client_lost_frames:)"
 		client_discard="$(get_ethtool_param rx_hpcap_noclient_frames:)"
-		ifaceStats="$ifaceStats $(tail -n 1 $outdir/$iface) $client_loss $client_discard $link $rx_errors"
+		removed_dups="$(get_ethtool_param rx_hpcap_dup_frames:)"
+		rx_bytes="$(get_ethtool_param rx_bytes:)"
+		rx_packets="$(get_ethtool_param rx_packets:)"
+		rx_loss="$(get_ethtool_param rx_missed_errors:)"
+		ifaceStats="$ifaceStats $tstamp $rx_bytes $rx_packets 0 $rx_loss $client_loss $client_discard $link $rx_errors $removed_dups"
 	done
-	echo $ifaceStats
+	echo "$ifaceStats"
 
-	sleep $monitor_interval
-done ) | gawk -vmonitor_interval=$monitor_interval -vifaceList="$ifs" \
+	sleep "$monitor_interval"
+done ) | gawk -vmonitor_interval="$monitor_interval" -vinitialTstamp="$initial_tstamp" \
+	 -vifaceList="$ifs" \
 	 -vinitialLosses="$initial_losses" -vinitialRxBytes="$initial_rx" \
 	 -vinitialSecondsNoLoss="$initial_no_loss" -vinitialClientLoss="$initial_client_loss" \
-	 -vinitialClientDiscard="$initial_client_discard" '
+	 -vinitialClientDiscard="$initial_client_discard" -vinitialRemovedDups="$initial_removed_dups" \
+	 -vinitialRxFrames="$initial_rxframes" -vhasDuplicateRemoval="$has_duplicate_removal" \
+	 -vverbose="$verbose" '
 BEGIN {
 	ifaceCount = split(ifaceList,ifaces)
 	postfixCount = split("b Kb Mb Gb Tb Pb",sizePostfixes)
@@ -133,17 +190,22 @@ BEGIN {
 	# Configure initial values with what the parent tells us
 	split(initialLosses, lossesList)
 	split(initialRxBytes, rxBytesList)
+	split(initialRxFrames, rxFramesList)
 	split(initialSecondsNoLoss, noLossList)
 	split(initialClientLoss, clientLossList)
 	split(initialClientDiscard, clientDiscardList)
+	split(initialRemovedDups, clientDupsList)
 
 	for (i = 1; i <= ifaceCount; i++) {
 		iface = ifaces[i]
 		accRxBytes[iface] = rxBytesList[i]
+		accRxFrames[iface] = rxFramesList[i]
 		accLostFrames[iface] = lossesList[i]
 		noLossSeconds[iface] = noLossList[i]
 		clientLoss[iface] = clientLossList[i]
 		clientDiscard[iface] = clientDiscardList[i]
+		clientDups[iface] = clientDupsList[i]
+		lastTstamp[iface] = initialTstamp
 	}
 
 	if(!monitor_interval) monitor_interval = 1
@@ -188,35 +250,68 @@ function legend() {
 }
 
 /- / { print }
+/hardclear/ { print "\033[2J\033[;H" }
 /clear/ { printf "\033[0;0H" }
 
 ! /- / && ! /clear/ {
+	if (verbose == 1)
+		printf "- %d interfaces available\n", ifaceCount
+
 	printf "- RX Stats\n\n"
+
 	printf "%6s | %5s | %10s | %8s | %10s - %6s | %9s - %6s | Time w/o losses \n", "iface", "Flags", "RX Rate", "RX Tot.", "Losses", "%", "Loss Tot.", "%"
 	for (i = 0; i < ifaceCount; i++) {
 		iface = ifaces[i + 1]
 
-		i_rxBytes = 9 * i + 2
-		i_rxFrames = 9 * i + 3
-		i_lostFrames = 9 * i + 5
-		i_clientLoss = 9 * i + 6
-		i_clientDiscard = 9 * i + 7
-		i_link = 9 * i + 8
-		i_errors = 9 * i + 9
+		num_fields = 10
+		i_rxBytes = num_fields * i + 2
+		i_rxFrames = num_fields * i + 3
+		i_tstamp = num_fields * i + 1
+		i_lostFrames = num_fields * i + 5
+		i_clientLoss = num_fields * i + 6
+		i_clientDiscard = num_fields * i + 7
+		i_link = num_fields * i + 8
+		i_errors = num_fields * i + 9
+		i_dups = num_fields * i + 10
 
-		rxBytes = $i_rxBytes
-		rxFrames = $i_rxFrames
-		lostFrames = $i_lostFrames
+		rxBytes = $i_rxBytes - accRxBytes[iface]
+		rxFrames = $i_rxFrames - accRxFrames[iface]
+		lostFrames = $i_lostFrames - accLostFrames[iface]
+		currTstamp = $i_tstamp
 		clientLostFrames = $i_clientLoss
 		clientDiscardedFrames = $i_clientDiscard
 		hasLink = $i_link
 		errors = $i_errors
+		dups = $i_dups
 
-		if (rxBytes < 0 || rxFrames < 0 || lostFrames < 0)
+		if (rxBytes < 0 || rxFrames < 0 || lostFrames < 0) {
+			if (verbose == 1)
+				printf "%s ignored for negative values (%d bytes, %d frames, %d losses)\n", iface, rxBytes, rxFrames, lostFrames
+
 			continue
+		}
 
+		monitor_interval = currTstamp - lastTstamp[iface]
+		lastTstamp[iface] = currTstamp
+
+		accRxFrames[iface] += rxFrames
 		accRxBytes[iface] += rxBytes
 		accLostFrames[iface] += lostFrames
+		currentDups[iface] = dups - accDupFrames[iface]
+		accDupFrames[iface] = dups
+
+		currentRxPlusDups = rxFrames + currentDups[iface]
+		accRxPlusDups = accRxFrames[iface] + accDupFrames[iface]
+
+		if (currentRxPlusDups > 0)
+			currentDupsPerc[iface] = 100 * currentDups[iface] / currentRxPlusDups
+		else
+			currentDupsPerc[iface] = 0
+
+		if (accRxPlusDups > 0)
+			accDupsPerc[iface] = 100 * accDupFrames[iface] / accRxPlusDups
+		else
+			accDupsPerc[iface] = 0
 
 		rxSpeed = humanSize(8 * rxBytes / monitor_interval)
 		lossSpeed = lostFrames / monitor_interval
@@ -224,7 +319,7 @@ function legend() {
 		totalLoss = accLostFrames[iface]
 		lossHuman = humanSize(lostFrames)
 		totalLossHuman = humanSize(totalLoss)
-		totFrames = rxFrames + lostFrames
+		totFrames = currentRxPlusDups + lostFrames
 		totAccFrames = accRxBytes[iface] + accLostFrames[iface]
 
 		if (hasLink)
@@ -276,6 +371,26 @@ function legend() {
 		printf "%6s |  %5s | %8sps | %8s | %7spps - %6.2f | %9s - %6.2f | %s    \n", iface, flags, rxSpeed, totalRx, lossHuman, lossPctg, totalLossHuman, lossAccPctg, noLossSecs_currIface
 
 	}
+
+	if (hasDuplicateRemoval == "true") {
+		printf "\nDuplicate removal stats: \n\n"
+
+		printf "%6s | %10s - %6s | %8s - %6s \n", "iface", "Rate", "% RX", "Total", "% RX"
+		for (i = 0; i < ifaceCount; i++) {
+			iface = ifaces[i + 1]
+			dupsHuman = humanSize(currentDups[iface])
+			totalDupsHuman = humanSize(accDupFrames[iface])
+			dupsPerc = currentDupsPerc[iface]
+			totalDupsPerc = accDupsPerc[iface]
+
+			sub(/b/, "", dupsHuman)
+			sub(/b/, "", totalDupsHuman)
+
+
+			printf "%6s | %7spps - %6.2f | %8s - %6.2f \n", iface, dupsHuman, dupsPerc, totalDupsHuman, totalDupsPerc
+		}
+	}
+
 	legend()
 }
 '
